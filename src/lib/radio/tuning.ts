@@ -19,6 +19,15 @@ export const BANDS = {
     unit: "kHz",
     label: "Fale krótkie",
   },
+  pl: {
+    min: 87.5,
+    max: 108,
+    fine: 0.05,
+    coarse: 0.25,
+    hear: 1.05,
+    unit: "MHz",
+    label: "Polska",
+  },
 } as const;
 
 export type Tune = {
@@ -66,7 +75,7 @@ export function describe(band: BandId, freq: number): Tune {
 
 export function formatFreq(band: BandId, freq: number) {
   const clamped = clampFreq(band, freq);
-  if (band === "fm") return clamped.toFixed(2).replace(".", ",");
+  if (band === "fm" || band === "pl") return clamped.toFixed(2).replace(".", ",");
   return String(Math.round(clamped));
 }
 
@@ -94,7 +103,7 @@ export function dialPercent(band: BandId, freq: number) {
 
 export function scaleTicks(band: BandId): { freq: number; label?: string; major: boolean }[] {
   const ticks: { freq: number; label?: string; major: boolean }[] = [];
-  if (band === "fm") {
+  if (band === "fm" || band === "pl") {
     for (let freq = 88; freq <= 108; freq += 1) {
       const major = freq % 4 === 0;
       ticks.push({ freq, major, label: major ? String(freq) : undefined });

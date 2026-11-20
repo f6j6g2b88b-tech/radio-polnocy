@@ -1,4 +1,4 @@
-export type BandId = "fm" | "sw";
+export type BandId = "fm" | "sw" | "pl";
 
 export type VoiceId =
   | "lighthouse"
@@ -12,7 +12,8 @@ export type VoiceId =
   | "dream"
   | "numbers"
   | "cellar"
-  | "harbor";
+  | "harbor"
+  | "broadcast";
 
 export type Station = {
   id: string;
@@ -21,6 +22,7 @@ export type Station = {
   name: string;
   sign: string;
   voice: VoiceId;
+  stream?: string;
   lines: string[];
 };
 
@@ -180,6 +182,90 @@ export const STATIONS: Station[] = [
       "Cumujemy przy kieszeni płaszcza.",
       "Statek jest mały, ale fala w kieszeni jest prawdziwa.",
       "Odpłyń przed świtem. Rano port wygląda jak zwykła nitka.",
+    ],
+  },
+  {
+    id: "dwojka",
+    band: "pl",
+    freq: 89.1,
+    name: "Dwójka",
+    sign: "PR2",
+    voice: "broadcast",
+    stream: "https://stream12.polskieradio.pl/pr2/pr2.sdp/playlist.m3u8",
+    lines: [
+      "Program Drugi Polskiego Radia. Prawdziwa audycja, ściągana z internetu.",
+      "Muzyka i kultura dzieją się teraz. To nie jest depesza.",
+      "Jak sygnał siądzie czysto, szum zejdzie i zostanie ich antena.",
+    ],
+  },
+  {
+    id: "trojka",
+    band: "pl",
+    freq: 92.6,
+    name: "Trójka",
+    sign: "PR3",
+    voice: "broadcast",
+    stream: "https://stream13.polskieradio.pl/pr3/pr3.sdp/playlist.m3u8",
+    lines: [
+      "Program Trzeci Polskiego Radia, na żywo.",
+      "Telefon nie jest anteną. Odtwarza ich strumień.",
+      "Zostaw skalę, jeśli słychać ludzi, nie szum.",
+    ],
+  },
+  {
+    id: "czworka",
+    band: "pl",
+    freq: 96.1,
+    name: "Czwórka",
+    sign: "PR4",
+    voice: "broadcast",
+    stream: "https://stream14.polskieradio.pl/pr4/pr4.sdp/playlist.m3u8",
+    lines: [
+      "Czwórka Polskiego Radia. Młodsza antena, ten sam kraj.",
+      "To jest transmisja z sieci, nie głos złożony w telefonie.",
+      "Między piosenkami czasem wpadają wiadomości.",
+    ],
+  },
+  {
+    id: "pr24",
+    band: "pl",
+    freq: 99.4,
+    name: "Polskie Radio 24",
+    sign: "PR24",
+    voice: "broadcast",
+    stream: "https://stream15.polskieradio.pl/pr24/pr24.sdp/playlist.m3u8",
+    lines: [
+      "Polskie Radio 24. Wiadomości, bez przerwy na depeszę.",
+      "Jak złapiesz czysto, mówią ludzie z redakcji, nie z kartki.",
+      "Sygnał idzie z ich serwera. Fala z powietrza tu nie dociera.",
+    ],
+  },
+  {
+    id: "dzieciom",
+    band: "pl",
+    freq: 102.5,
+    name: "Radio Dzieciom",
+    sign: "RD",
+    voice: "broadcast",
+    stream: "https://stream85.polskieradio.pl/live/radio_dzieciom.sdp/playlist.m3u8",
+    lines: [
+      "Radio Dzieciom. Polskie Radio dla młodszych uszu.",
+      "Słuchowiska i piosenki lecą na żywo ze strumienia.",
+      "To osobna antena, nie nocna stacja z dziennika.",
+    ],
+  },
+  {
+    id: "kierowcy",
+    band: "pl",
+    freq: 105.6,
+    name: "Radio Kierowców",
+    sign: "RK",
+    voice: "broadcast",
+    stream: "https://stream10.polskieradio.pl/prk/rdk.sdp/playlist.m3u8",
+    lines: [
+      "Radio Kierowców. Droga, pogoda, ruch.",
+      "Audycja jest prawdziwa. Skala tylko pomaga ją znaleźć.",
+      "Zatrzymaj się na częstotliwości, resztę zrobi strumień.",
     ],
   },
 ];

@@ -6,7 +6,10 @@ export type Mix = {
   strength: number;
   place: number;
   voice: VoiceId | null;
+  stream: string | null;
 };
+
+export type AirStatus = "idle" | "opening" | "playing" | "lost";
 
 type Samples = { white: AudioBuffer; brown: AudioBuffer };
 
@@ -389,6 +392,13 @@ function createVoice(ctx: AudioContext, dest: AudioNode, id: VoiceId, samples: S
       };
       break;
     }
+    case "broadcast": {
+      const gain = rig.keep(ctx.createGain());
+      gain.gain.value = 0.03;
+      wire(rig.osc("sine", 220), gain);
+      gain.connect(rig.out);
+      break;
+    }
     default:
       return assertNever(id);
   }
@@ -398,6 +408,114 @@ function createVoice(ctx: AudioContext, dest: AudioNode, id: VoiceId, samples: S
 
 function assertNever(value: never): never {
   throw new Error(`Nieznany głos: ${String(value)}`);
+}
+
+class Air {
+  status: AirStatus = "idle";
+  private audio: HTMLAudioElement | null = null;
+  private hls: { destroy: () => void } | null = null;
+  private url: string | null = null;
+  private token = 0;
+  private retryAt = 0;
+  private quiet = false;
+
+  constructor(private emit: (status: AirStatus) => void) {}
+
+  sync(url: string | null, level: number) {
+    if (!url) {
+      if (this.url || this.status !== "idle") {
+        this.stop();
+        this.setStatus("idle");
+      }
+      return;
+    }
+    const audio = this.element();
+    audio.volume = Math.min(1, Math.max(0, level));
+    if (this.url === url) {
+      if (this.status === "lost" && performance.now() < this.retryAt) return;
+      if (this.status !== "lost") return;
+      this.url = null;
+      this.detach();
+    }
+    void this.open(url);
+  }
+
+  stop() {
+    this.token += 1;
+    this.url = null;
+    this.retryAt = 0;
+    this.detach();
+  }
+
+  private element() {
+    if (this.audio) return this.audio;
+    const audio = new Audio();
+    audio.preload = "none";
+    audio.addEventListener("playing", () => this.setStatus("playing"));
+    audio.addEventListener("error", () => {
+      if (this.quiet || !this.url) return;
+      this.fail();
+    });
+    this.audio = audio;
+    return audio;
+  }
+
+  private async open(url: string) {
+    const token = ++this.token;
+    this.detach();
+    this.url = url;
+    this.setStatus("opening");
+    const audio = this.element();
+    try {
+      const playlist = url.includes(".m3u8");
+      const native = playlist && audio.canPlayType("application/vnd.apple.mpegurl") !== "";
+      if (playlist && !native) {
+        const { default: Hls } = await import("hls.js");
+        if (token !== this.token) return;
+        if (!Hls.isSupported()) {
+          this.fail();
+          return;
+        }
+        const hls = new Hls({ maxBufferLength: 12 });
+        this.hls = hls;
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (this.quiet || !data.fatal) return;
+          this.fail();
+        });
+        hls.loadSource(url);
+        hls.attachMedia(audio);
+      } else {
+        audio.src = url;
+      }
+      if (token !== this.token) return;
+      this.quiet = false;
+      await audio.play();
+    } catch {
+      if (token === this.token) this.fail();
+    }
+  }
+
+  private fail() {
+    if (!this.url) return;
+    this.retryAt = performance.now() + 8000;
+    this.setStatus("lost");
+  }
+
+  private detach() {
+    this.quiet = true;
+    this.hls?.destroy();
+    this.hls = null;
+    if (!this.audio) return;
+    this.audio.pause();
+    this.audio.removeAttribute("src");
+    this.audio.load();
+  }
+
+  private setStatus(status: AirStatus) {
+    if (this.status === status) return;
+    this.status = status;
+    this.emit(status);
+  }
 }
 
 class Engine {
@@ -411,9 +529,11 @@ class Engine {
   private samples: Samples;
   private voice: Rig | null = null;
   private voiceId: VoiceId | null = null;
-  private params: Mix = { power: false, volume: 0.78, strength: 0, place: 0.2, voice: null };
+  private params: Mix = { power: false, volume: 0.78, strength: 0, place: 0.2, voice: null, stream: null };
   private raf = 0;
   private onVis: (() => void) | null = null;
+  private airListeners = new Set<(status: AirStatus) => void>();
+  private air: Air;
 
   constructor() {
     const ctx = new AudioContext({ latencyHint: "interactive" });
@@ -460,6 +580,10 @@ class Engine {
     this.hetGain.connect(this.master);
     this.het.start();
 
+    this.air = new Air((status) => {
+      for (const listener of this.airListeners) listener(status);
+    });
+
     this.onVis = () => {
       if (document.visibilityState === "visible") this.resume();
     };
@@ -468,6 +592,14 @@ class Engine {
 
   resume() {
     if (this.ctx.state !== "running") void this.ctx.resume();
+  }
+
+  onAir(listener: (status: AirStatus) => void) {
+    this.airListeners.add(listener);
+    listener(this.air.status);
+    return () => {
+      this.airListeners.delete(listener);
+    };
   }
 
   sync(params: Mix) {
@@ -481,6 +613,7 @@ class Engine {
     this.raf = 0;
     this.retire(this.voice);
     this.voice = null;
+    this.air.stop();
     if (this.onVis) document.removeEventListener("visibilitychange", this.onVis);
     void this.ctx.close();
   }
@@ -500,21 +633,26 @@ class Engine {
 
   private apply(time: number) {
     this.ensureVoice();
+    const live = !!this.params.stream && this.params.strength > 0.62 && this.air.status === "playing";
     if (!this.params.power) {
       ramp(this.master.gain, 0, time, 0.05);
+      this.air.sync(null, 0);
       return;
     }
     const strength = this.params.strength;
-    ramp(this.master.gain, this.params.volume * this.params.volume, time, 0.08);
-    const noise = 0.08 + 0.5 * (1 - Math.pow(strength, 0.8));
+    const level = this.params.volume * this.params.volume;
+    ramp(this.master.gain, live ? level * 0.22 : level, time, 0.08);
+    const noise = live ? 0.012 : 0.08 + 0.5 * (1 - Math.pow(strength, 0.8));
     ramp(this.noiseGain.gain, noise, time, 0.08);
     const drift = Math.sin(time * 0.55) * 160;
     ramp(this.noiseFilter.frequency, 700 + this.params.place * 2200 + drift, time, 0.12);
     ramp(this.noiseFilter.Q, 0.55 + strength * 6.5, time, 0.1);
-    const hetAmt = strength > 0.03 && strength < 0.92 ? Math.sin((strength / 0.92) * Math.PI) : 0;
+    const hetAmt = live ? 0 : strength > 0.03 && strength < 0.92 ? Math.sin((strength / 0.92) * Math.PI) : 0;
     ramp(this.hetGain.gain, hetAmt * 0.09, time, 0.05);
     ramp(this.het.frequency, Math.max(80, 180 + (1 - strength) * 1700), time, 0.06);
-    if (this.voice) ramp(this.voice.out.gain, Math.pow(strength, 1.15), time, 0.07);
+    if (this.voice) ramp(this.voice.out.gain, live ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
+    const feed = this.params.stream && strength > 0.62 ? this.params.stream : null;
+    this.air.sync(feed, level * Math.pow(Math.max(strength, 0.001), 0.8));
   }
 
   private ensureVoice() {

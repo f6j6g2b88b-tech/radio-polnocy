@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { ChevronLeft, ChevronRight, Volume2, VolumeX } from "lucide-react";
-import { getEngine, peekEngine, type Mix } from "@/lib/radio/audio";
+import { getEngine, peekEngine, type AirStatus, type Mix } from "@/lib/radio/audio";
 import { STATIONS, stationById, type BandId } from "@/lib/radio/stations";
 import {
   BANDS,
@@ -23,6 +23,7 @@ type Memory = {
   band: BandId;
   fm: number;
   sw: number;
+  pl: number;
   volume: number;
   caught: Caught[];
 };
@@ -31,6 +32,7 @@ const INITIAL: Memory = {
   band: "fm",
   fm: 90,
   sw: 6000,
+  pl: 94,
   volume: 0.78,
   caught: [],
 };
@@ -38,9 +40,10 @@ const INITIAL: Memory = {
 function sanitize(raw: unknown): Memory {
   if (!raw || typeof raw !== "object") return INITIAL;
   const record = raw as Partial<Memory>;
-  const band: BandId = record.band === "sw" ? "sw" : "fm";
+  const band: BandId = record.band === "sw" || record.band === "pl" ? record.band : "fm";
   const fm = clampFreq("fm", typeof record.fm === "number" ? record.fm : INITIAL.fm);
   const sw = clampFreq("sw", typeof record.sw === "number" ? record.sw : INITIAL.sw);
+  const pl = clampFreq("pl", typeof record.pl === "number" ? record.pl : INITIAL.pl);
   const volume = clamp01(typeof record.volume === "number" ? record.volume : INITIAL.volume);
   const caught = Array.isArray(record.caught)
     ? record.caught
@@ -51,7 +54,7 @@ function sanitize(raw: unknown): Memory {
         })
         .slice(0, 24)
     : [];
-  return { band, fm, sw, volume, caught };
+  return { band, fm, sw, pl, volume, caught };
 }
 
 function mixFrom(power: boolean, memory: Memory): Mix {
@@ -62,6 +65,7 @@ function mixFrom(power: boolean, memory: Memory): Mix {
     strength: power ? tuned.strength : 0,
     place: tuned.place,
     voice: power && tuned.strength > 0.05 ? tuned.station.voice : null,
+    stream: power && tuned.station.stream && tuned.strength > 0.62 ? tuned.station.stream : null,
   };
 }
 
@@ -107,6 +111,7 @@ export function RadioApp() {
   const [noted, setNoted] = useState("");
   const [count, setCount] = useState(0);
   const [seed, setSeed] = useState(1);
+  const [air, setAir] = useState<AirStatus>("idle");
   const reduced = useReducedMotion();
 
   const memoryRef = useRef(memory);
@@ -201,8 +206,8 @@ export function RadioApp() {
     let cursor = memoryRef.current[band];
     let traveled = 0;
     let armed = false;
-    const step = band === "fm" ? 0.07 : 28;
-    const armDist = band === "fm" ? 0.16 : 70;
+    const step = band === "sw" ? 28 : 0.07;
+    const armDist = band === "sw" ? 70 : 0.16;
     setScanning(true);
     scanTimer.current = setInterval(() => {
       cursor = Math.min(spec.max, cursor + step);
@@ -229,7 +234,7 @@ export function RadioApp() {
     stopScan();
     const stepOnce = () => {
       setMemory((current) => {
-        const step = current.band === "fm" ? 0.1 : 40;
+        const step = current.band === "sw" ? 40 : 0.1;
         return { ...current, [current.band]: clampFreq(current.band, current[current.band] + dir * step) };
       });
     };
@@ -305,6 +310,16 @@ export function RadioApp() {
       if (nudgeTimer.current) clearInterval(nudgeTimer.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!on) {
+      setAir("idle");
+      return;
+    }
+    const engine = peekEngine();
+    if (!engine) return;
+    return engine.onAir(setAir);
+  }, [on]);
 
   useEffect(() => {
     if (phase !== "lock") return;
@@ -420,7 +435,9 @@ export function RadioApp() {
     phase === "off"
       ? "Włącz go. Potem prowadź skalę albo gałkę, aż szum się rozstąpi i ktoś zacznie mówić."
       : phase === "static"
-        ? "Między stacjami jest tylko noc. Znaczki na skali to miejsca, w których ktoś czeka."
+        ? memory.band === "pl"
+          ? "Między antenami jest cisza. Na tej skali czekają Dwójka, Trójka, Czwórka, Radio 24, Dzieciom i Kierowców."
+          : "Między stacjami jest tylko noc. Znaczki na skali to miejsca, w których ktoś czeka."
         : phase === "near"
           ? "Prawie. Jeszcze włos w lewo albo w prawo — głos jest tuż pod szumem."
           : shown;
@@ -429,7 +446,12 @@ export function RadioApp() {
     !on ? "odbiornik śpi" : phase === "static" ? "między stacjami" : tuned.station.name;
 
   return (
-    <main className="relative min-h-dvh overflow-x-hidden" data-testid="radio" data-audio={on ? audioState : "off"}>
+    <main
+      className="relative min-h-dvh overflow-x-hidden"
+      data-testid="radio"
+      data-audio={on ? audioState : "off"}
+      data-stream={air}
+    >
       <div className="grain" aria-hidden="true" />
       <div className="halo" aria-hidden="true" />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-5xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-10">
@@ -438,7 +460,7 @@ export function RadioApp() {
             <p className="font-mono text-xs tracking-widest text-cream/70 uppercase">Odbiornik nocny</p>
             <h1 className="font-display text-4xl text-balance sm:text-5xl">Radio Północy</h1>
             <p className="mt-2 max-w-md text-pretty text-cream/75">
-              Dwanaście stacji, których nie ma w programie. Złap je z szumu.
+              Dwanaście stacji, których nie ma w programie. Na paśmie Polska — prawdziwe anteny.
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-center gap-2">
@@ -637,26 +659,33 @@ export function RadioApp() {
               <div
                 role="radiogroup"
                 aria-label="Zakres"
-                className="grid grid-cols-2 gap-1 rounded-full bg-ink/45 p-1"
+                className="grid grid-cols-3 gap-1 rounded-full bg-ink/45 p-1"
               >
-                {(["fm", "sw"] as const).map((band) => (
+                {(["fm", "sw", "pl"] as const).map((band) => (
                   <button
                     key={band}
                     type="button"
                     role="radio"
                     aria-checked={memory.band === band}
-                    data-testid={band === "sw" ? "band-sw" : "band-fm"}
+                    data-testid={band === "sw" ? "band-sw" : band === "pl" ? "band-pl" : "band-fm"}
                     className={
                       memory.band === band
-                        ? "tap h-11 rounded-full bg-lamp font-mono text-sm text-ink"
-                        : "tap h-11 rounded-full font-mono text-sm text-cream/80"
+                        ? "tap h-11 whitespace-nowrap rounded-full bg-lamp px-1 font-mono text-xs text-ink sm:text-sm"
+                        : "tap h-11 whitespace-nowrap rounded-full px-1 font-mono text-xs text-cream/80 sm:text-sm"
                     }
                     onClick={() => {
                       stopScan();
                       setMemory((current) => ({ ...current, band }));
                     }}
                   >
-                    {BANDS[band].label}
+                    {band === "sw" ? (
+                      <>
+                        <span className="sm:hidden">Krótkie</span>
+                        <span className="hidden sm:inline">Fale krótkie</span>
+                      </>
+                    ) : (
+                      BANDS[band].label
+                    )}
                   </button>
                 ))}
               </div>
@@ -696,6 +725,15 @@ export function RadioApp() {
                 {phase === "lock" && count < letter.length && !reduced ? <span className="caret" /> : null}
               </p>
               {noted ? <p className="mt-4 font-display text-lg italic">Wpisane do dziennika — {noted}.</p> : null}
+              {phase === "lock" && tuned.station.stream ? (
+                <p className="mt-4 font-mono text-xs tracking-widest" data-testid="stream">
+                  {air === "playing"
+                    ? "Na żywo · strumień Polskiego Radia"
+                    : air === "lost"
+                      ? "Strumień nie doszedł. Zostaw skalę, spróbuję jeszcze raz."
+                      : "Łączę ze strumieniem…"}
+                </p>
+              ) : null}
             </article>
 
             <section aria-label="Dziennik nasłuchu">
