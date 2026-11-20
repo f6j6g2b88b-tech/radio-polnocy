@@ -415,6 +415,7 @@ const SILENT_WAV =
 
 class Air {
   status: AirStatus = "idle";
+  readonly output: GainNode;
   private audio: HTMLAudioElement | null = null;
   private hls: { destroy: () => void } | null = null;
   private url: string | null = null;
@@ -422,10 +423,22 @@ class Air {
   private retryAt = 0;
   private quiet = false;
   private primed = false;
+  private routed = false;
+  private levelTarget = -1;
 
-  constructor(private emit: (status: AirStatus) => void) {}
+  constructor(
+    private ctx: AudioContext,
+    private emit: (status: AirStatus) => void,
+  ) {
+    this.output = ctx.createGain();
+    this.output.gain.value = 0;
+  }
 
   sync(url: string | null, level: number) {
+    if (Math.abs(level - this.levelTarget) > 0.001) {
+      this.levelTarget = level;
+      this.output.gain.setTargetAtTime(level, this.ctx.currentTime, 0.04);
+    }
     if (!url) {
       if (this.url || this.status !== "idle") {
         this.stop();
@@ -434,7 +447,10 @@ class Air {
       return;
     }
     const audio = this.element();
-    audio.volume = Math.min(1, Math.max(0, level));
+    // The element stays at full scale. The knob rides the Web Audio gain,
+    // because iOS ignores HTMLMediaElement.volume.
+    if (!this.routed) audio.volume = Math.min(1, Math.max(0, level));
+    else if (audio.volume !== 1) audio.volume = 1;
     if (this.url === url) {
       if (this.status === "lost" && performance.now() < this.retryAt) return;
       if (this.status !== "lost") return;
@@ -468,8 +484,15 @@ class Air {
   private element() {
     if (this.audio) return this.audio;
     const audio = new Audio();
+    audio.crossOrigin = "anonymous";
     audio.preload = "none";
     audio.setAttribute("playsinline", "");
+    try {
+      this.ctx.createMediaElementSource(audio).connect(this.output);
+      this.routed = true;
+    } catch {
+      this.routed = false;
+    }
     audio.addEventListener("playing", () => {
       if (this.quiet || !this.url) return;
       this.setStatus("playing");
@@ -559,6 +582,7 @@ class Engine {
   private voiceBus: GainNode;
   private netHot = false;
   private mouths = new Map<string, { src: MediaStreamAudioSourceNode; gain: GainNode }>();
+  private masterTarget = -1;
 
   constructor() {
     const ctx = new AudioContext({ latencyHint: "interactive" });
@@ -609,9 +633,10 @@ class Engine {
     this.hetGain.connect(this.master);
     this.het.start();
 
-    this.air = new Air((status) => {
+    this.air = new Air(ctx, (status) => {
       for (const listener of this.airListeners) listener(status);
     });
+    this.air.output.connect(this.master);
 
     this.onVis = () => {
       if (document.visibilityState === "visible") this.resume();
@@ -697,13 +722,19 @@ class Engine {
     this.ensureVoice();
     const live = !!this.params.stream && this.params.strength > 0.62 && this.air.status === "playing";
     if (!this.params.power) {
-      ramp(this.master.gain, 0, time, 0.05);
+      if (this.masterTarget !== 0) {
+        this.masterTarget = 0;
+        ramp(this.master.gain, 0, time, 0.05);
+      }
       this.air.sync(null, 0);
       return;
     }
     const strength = this.params.strength;
     const level = this.params.volume * this.params.volume;
-    ramp(this.master.gain, live ? level * 0.22 : level, time, 0.08);
+    if (Math.abs(level - this.masterTarget) > 0.001) {
+      this.masterTarget = level;
+      ramp(this.master.gain, level, time, 0.04);
+    }
     const noiseOpen = live ? 0.012 : 0.08 + 0.5 * (1 - Math.pow(strength, 0.8));
     const noise = this.netHot ? Math.min(noiseOpen, 0.025) : noiseOpen;
     ramp(this.noiseGain.gain, noise, time, 0.08);
@@ -715,7 +746,7 @@ class Engine {
     ramp(this.het.frequency, Math.max(80, 180 + (1 - strength) * 1700), time, 0.06);
     if (this.voice) ramp(this.voice.out.gain, live || this.netHot ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
     const feed = this.params.stream && strength > 0.62 ? this.params.stream : null;
-    this.air.sync(feed, level * Math.pow(Math.max(strength, 0.001), 0.8));
+    this.air.sync(feed, feed ? 0.9 * Math.pow(Math.max(strength, 0.001), 0.8) : 0);
   }
 
   private ensureVoice() {
