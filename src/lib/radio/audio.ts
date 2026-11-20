@@ -410,6 +410,9 @@ function assertNever(value: never): never {
   throw new Error(`Nieznany głos: ${String(value)}`);
 }
 
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+
 class Air {
   status: AirStatus = "idle";
   private audio: HTMLAudioElement | null = null;
@@ -418,6 +421,7 @@ class Air {
   private token = 0;
   private retryAt = 0;
   private quiet = false;
+  private primed = false;
 
   constructor(private emit: (status: AirStatus) => void) {}
 
@@ -447,11 +451,29 @@ class Air {
     this.detach();
   }
 
+  unlock() {
+    if (this.primed) return;
+    this.primed = true;
+    const primer = new Audio();
+    primer.setAttribute("playsinline", "");
+    primer.src = SILENT_WAV;
+    void primer.play().then(
+      () => primer.pause(),
+      () => {
+        this.primed = false;
+      },
+    );
+  }
+
   private element() {
     if (this.audio) return this.audio;
     const audio = new Audio();
     audio.preload = "none";
-    audio.addEventListener("playing", () => this.setStatus("playing"));
+    audio.setAttribute("playsinline", "");
+    audio.addEventListener("playing", () => {
+      if (this.quiet || !this.url) return;
+      this.setStatus("playing");
+    });
     audio.addEventListener("error", () => {
       if (this.quiet || !this.url) return;
       this.fail();
@@ -604,6 +626,7 @@ class Engine {
 
   sync(params: Mix) {
     this.params = params;
+    if (params.power) this.air.unlock();
     this.apply(this.ctx.currentTime);
     this.kick();
   }
