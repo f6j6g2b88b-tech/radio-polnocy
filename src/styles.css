@@ -387,9 +387,59 @@
   z-index: 2;
 }
 
-.scale-frame .pointer {
-  background: var(--color-cloth);
-  box-shadow: none;
+.rds {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  column-gap: 0.55rem;
+  row-gap: 0.15rem;
+  margin-top: 0.45rem;
+  overflow: hidden;
+  border-radius: 0.2rem;
+  background: color-mix(in oklab, black 62%, transparent);
+  padding: 0.28rem 0.45rem 0.32rem;
+  color: color-mix(in oklab, var(--color-eye) 45%, var(--color-cloth));
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rds.is-on {
+  color: var(--color-eye);
+  text-shadow: 0 0 8px color-mix(in oklab, var(--color-eye) 55%, transparent);
+}
+
+.rds-tag {
+  opacity: 0.7;
+}
+
+.rds-ps {
+  font-weight: 500;
+}
+
+.rds-pty {
+  justify-self: end;
+  opacity: 0.8;
+}
+
+.rds-rt {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.rds-scroll {
+  display: inline-block;
+  animation: rds-marquee 18s linear infinite;
+}
+
+@keyframes rds-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
 }
 
 .pointer::before {
@@ -527,7 +577,8 @@
   .power-knob,
   .caret,
   .tap,
-  .eye.is-lit {
+  .eye.is-lit,
+  .rds-scroll {
     animation: none;
     transition: none;
   }

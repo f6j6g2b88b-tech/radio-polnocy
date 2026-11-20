@@ -270,6 +270,79 @@ export const STATIONS: Station[] = [
   },
 ];
 
+export type Rds = {
+  ps: string;
+  pty: string;
+  text: string;
+};
+
+export const RDS: Record<string, Rds> = {
+  latarnia: {
+    ps: "LATARNIA",
+    pty: "MORZE",
+    text: "Mgła na trzy mile. Zostań na kanale.",
+  },
+  ekspres: {
+    ps: "EKSPRES",
+    pty: "NOC",
+    text: "Następna stacja: nigdzie. Opóźnienie: cała noc.",
+  },
+  biblioteka: {
+    ps: "CISZA",
+    pty: "KSIĄŻKI",
+    text: "Proszę o zwrot tomu, którego pan nie wypożyczał.",
+  },
+  kuchnia: {
+    ps: "KUCHNIA",
+    pty: "DOM",
+    text: "Herbata na parapecie. Księżyc ją posłodził.",
+  },
+  obserwatorium: {
+    ps: "KOPUŁA",
+    pty: "NIEBO",
+    text: "Gwiazda numer 4418 nie stawiła się na apel.",
+  },
+  morze: {
+    ps: "MORZE",
+    pty: "WODA",
+    text: "Przypływ w pokoju na końcu korytarza.",
+  },
+  dwojka: {
+    ps: "PR 2",
+    pty: "KULTURA",
+    text: "Program Drugi Polskiego Radia. Na żywo.",
+  },
+  trojka: {
+    ps: "PR 3",
+    pty: "ROZRYWKA",
+    text: "Program Trzeci Polskiego Radia. Na żywo.",
+  },
+  czworka: {
+    ps: "PR 4",
+    pty: "MUZYKA",
+    text: "Czwórka Polskiego Radia. Na żywo.",
+  },
+  pr24: {
+    ps: "PR 24",
+    pty: "WIADOM.",
+    text: "Polskie Radio 24. Wiadomości bez przerwy.",
+  },
+  dzieciom: {
+    ps: "DZIECIOM",
+    pty: "DZIECI",
+    text: "Radio Dzieciom. Słuchowiska i piosenki.",
+  },
+  kierowcy: {
+    ps: "KIEROWCY",
+    pty: "DROGA",
+    text: "Radio Kierowców. Droga, pogoda, ruch.",
+  },
+};
+
+export function rdsFor(id: string): Rds | null {
+  return RDS[id] ?? null;
+}
+
 export function stationById(id: string): Station | null {
   return STATIONS.find((station) => station.id === id) ?? null;
 }

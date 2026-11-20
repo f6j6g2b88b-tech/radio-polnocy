@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { getEngine, peekEngine, type AirStatus, type Mix } from "@/lib/radio/audio";
-import { STATIONS, stationById, type BandId } from "@/lib/radio/stations";
+import { STATIONS, rdsFor, stationById, type BandId } from "@/lib/radio/stations";
 import {
   BANDS,
   clamp01,
@@ -537,6 +537,15 @@ export function RadioApp() {
                 ))}
                 <span className="pointer" style={{ left: `${dialPercent(memory.band, freq)}%` }} />
               </div>
+              <RdsLine
+                on={on}
+                band={memory.band}
+                phase={phase}
+                stationId={tuned.station.id}
+                strength={tuned.strength}
+                seed={seed}
+                reduced={reduced}
+              />
             </div>
             <div role="radiogroup" aria-label="Zakres" className="flex flex-col justify-center gap-1.5">
               {(["fm", "sw", "pl"] as const).map((band) => (
@@ -713,5 +722,57 @@ export function RadioApp() {
         </p>
       </div>
     </main>
+  );
+}
+
+function RdsLine({
+  on,
+  band,
+  phase,
+  stationId,
+  strength,
+  seed,
+  reduced,
+}: {
+  on: boolean;
+  band: BandId;
+  phase: Phase;
+  stationId: string;
+  strength: number;
+  seed: number;
+  reduced: boolean;
+}) {
+  const service = band === "sw" ? null : rdsFor(stationId);
+  const noisy = phase !== "lock" || strength < 0.93;
+  const amount = !on || !service ? 0 : phase === "lock" ? Math.max(0, (0.93 - strength) * 2.2) : 0.55;
+  const ps = !on
+    ? "--------"
+    : !service
+      ? "BEZ RDS"
+      : corrupt(service.ps.padEnd(8, " ").slice(0, 8), amount, seed);
+  const pty = service && on && phase !== "static" ? corrupt(service.pty, amount, seed + 5) : "";
+  const text = !on
+    ? ""
+    : !service
+      ? "Fale krótkie nie niosą tego systemu."
+      : phase === "static"
+        ? "Szukam nośnej…"
+        : corrupt(service.text, amount, seed + 11);
+
+  return (
+    <div className={on && service && phase !== "static" ? "rds is-on" : "rds"} data-testid="rds" data-ps={service?.ps ?? ""}>
+      <span className="rds-tag">RDS</span>
+      <span className="rds-ps">{ps}</span>
+      <span className="rds-pty">{pty}</span>
+      <span className="rds-rt">
+        {on && service && phase === "lock" && !noisy && !reduced ? (
+          <span className="rds-scroll">
+            {text} · {text}
+          </span>
+        ) : (
+          text
+        )}
+      </span>
+    </div>
   );
 }
