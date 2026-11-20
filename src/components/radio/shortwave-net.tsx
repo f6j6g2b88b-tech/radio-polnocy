@@ -42,6 +42,7 @@ export function ShortwaveNet({
   const micRef = useRef<MediaStream | null>(null);
   const sendingRef = useRef(false);
   const editingFreq = useRef(false);
+  const signRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(() => String(Math.round(freq)));
 
   useEffect(() => {
@@ -166,6 +167,11 @@ export function ShortwaveNet({
   }
 
   async function toggle() {
+    if (!on) return;
+    if (sign.length < 4) {
+      signRef.current?.focus();
+      return;
+    }
     if (!joined) return;
     if (sendingRef.current) {
       release();
@@ -204,7 +210,8 @@ export function ShortwaveNet({
             autoCorrect="off"
             spellCheck={false}
             aria-label="Wspólny znak, cztery znaki"
-            placeholder="NORD"
+            placeholder="····"
+            ref={signRef}
             onChange={(event) => onSign(normalizeSign(event.target.value))}
           />
         </label>
@@ -238,7 +245,7 @@ export function ShortwaveNet({
         className={sending ? "net-ptt is-live" : "net-ptt"}
         data-testid="ptt"
         data-tx={sending ? "on" : "off"}
-        aria-disabled={!joined}
+        aria-disabled={!on}
         aria-pressed={sending}
         onClick={(event) => {
           event.preventDefault();

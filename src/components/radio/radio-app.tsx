@@ -450,14 +450,14 @@ export function RadioApp() {
 
   return (
     <main
-      className="relative min-h-dvh overflow-x-hidden"
+      className="relative min-h-dvh overflow-x-clip"
       data-testid="radio"
       data-audio={on ? audioState : "off"}
       data-stream={air}
     >
       <div className="grain" aria-hidden="true" />
       <div className="halo" aria-hidden="true" />
-      <div className="relative z-10 mx-auto flex min-h-dvh max-w-5xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-10">
+      <div className="relative z-10 mx-auto flex min-h-dvh max-w-5xl flex-col gap-8 px-4 py-6 sm:px-8 sm:py-10">
         <header>
           <p className="font-mono text-xs tracking-widest text-cream/70 uppercase">Odbiornik nocny</p>
           <h1 className="font-display text-4xl text-balance sm:text-5xl">Radio Północy</h1>
@@ -661,7 +661,7 @@ export function RadioApp() {
           ) : null}
         </section>
 
-        <div className="grid items-start gap-6 lg:grid-cols-2">
+        <div className="listen grid items-start gap-6 lg:grid-cols-2">
             <article className="paper px-5 py-5 sm:px-7 sm:py-6" data-testid="paper" aria-label="Depesza">
               <p className="font-mono text-xs tracking-widest uppercase">
                 {phase === "off"
