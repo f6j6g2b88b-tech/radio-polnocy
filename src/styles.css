@@ -8,6 +8,10 @@
   --color-cabinet: #2a241c;
   --color-cream: #f3eadc;
   --color-lamp: #e7a24a;
+  --color-wood: #8b5a32;
+  --color-wood-dark: #3e2616;
+  --color-cloth: #e4d4b0;
+  --color-eye: #3dce78;
 }
 
 @layer base {
@@ -69,13 +73,176 @@
 
 .cabinet {
   background:
-    linear-gradient(180deg, color-mix(in oklab, var(--color-cream) 8%, transparent), transparent 30%),
-    var(--color-cabinet);
-  border: 1px solid color-mix(in oklab, var(--color-cream) 16%, transparent);
-  border-radius: 1.5rem;
+    linear-gradient(180deg, color-mix(in oklab, white 16%, transparent), transparent 14%),
+    linear-gradient(
+      100deg,
+      #3a2416 0%,
+      #6d4124 12%,
+      #a56b3a 24%,
+      #5a341c 38%,
+      #8d5a32 55%,
+      #c4a06a 62%,
+      #6a3c20 74%,
+      #3e2618 100%
+    );
+  border-radius: 1.1rem 1.1rem 1.4rem 1.4rem;
   box-shadow:
-    0 24px 60px color-mix(in oklab, var(--color-ink) 70%, transparent),
-    inset 0 1px 0 color-mix(in oklab, var(--color-cream) 18%, transparent);
+    0 28px 50px color-mix(in oklab, black 55%, transparent),
+    inset 0 1px 0 color-mix(in oklab, white 35%, transparent),
+    inset 0 -12px 20px color-mix(in oklab, black 28%, transparent);
+  color: var(--color-cream);
+}
+
+.cloth {
+  position: relative;
+  height: 11rem;
+  border-radius: 0.35rem;
+  background-color: var(--color-cloth);
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--color-wood-dark) 28%, transparent) 0 1px,
+      transparent 1px 3px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      color-mix(in oklab, white 45%, transparent) 0 1px,
+      transparent 1px 3px
+    );
+  box-shadow:
+    inset 0 0 0 8px color-mix(in oklab, var(--color-wood) 70%, black),
+    inset 0 18px 30px color-mix(in oklab, black 18%, transparent);
+}
+
+.eye {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 4.25rem;
+  height: 4.25rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 38% 32%, color-mix(in oklab, white 18%, var(--color-wood-dark)), var(--color-ink) 62%);
+  box-shadow:
+    0 0 0 5px color-mix(in oklab, var(--color-wood-dark) 80%, black),
+    0 8px 14px color-mix(in oklab, black 45%, transparent),
+    inset 0 0 0 2px color-mix(in oklab, white 12%, transparent);
+}
+
+.eye-glass {
+  position: absolute;
+  inset: 18%;
+  border-radius: 999px;
+  background: conic-gradient(
+    from -90deg,
+    transparent 0 var(--gap, 80deg),
+    var(--color-eye) var(--gap, 80deg) 180deg,
+    transparent 180deg calc(180deg + var(--gap, 80deg)),
+    var(--color-eye) calc(180deg + var(--gap, 80deg)) 360deg
+  );
+  opacity: var(--glow, 0);
+  filter: blur(0.4px);
+}
+
+.eye-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.85rem;
+  height: 0.85rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: #16110e;
+  box-shadow: inset 0 1px 2px color-mix(in oklab, black 60%, transparent);
+}
+
+.eye.is-warm .eye-core {
+  background: color-mix(in oklab, var(--color-eye) 40%, #16301c);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--color-eye) 55%, transparent);
+}
+
+.eye.is-lit .eye-glass {
+  filter: none;
+}
+
+.eye.is-lit .eye-core {
+  background: #f3ffe9;
+  box-shadow:
+    0 0 8px white,
+    0 0 18px var(--color-eye),
+    0 0 42px var(--color-eye);
+  animation: eye-breathe 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes eye-breathe {
+  from {
+    box-shadow:
+      0 0 6px white,
+      0 0 14px var(--color-eye);
+  }
+  to {
+    box-shadow:
+      0 0 12px white,
+      0 0 28px var(--color-eye),
+      0 0 64px var(--color-eye);
+  }
+}
+
+.eye.is-lit {
+  box-shadow:
+    0 0 0 5px color-mix(in oklab, var(--color-wood-dark) 80%, black),
+    0 0 28px color-mix(in oklab, var(--color-eye) 75%, transparent),
+    0 0 64px color-mix(in oklab, var(--color-eye) 35%, transparent);
+}
+
+.scale-frame {
+  margin: 0.85rem 0.9rem 0;
+  display: flex;
+  gap: 0.6rem;
+  border-radius: 0.35rem;
+  border: 2px solid color-mix(in oklab, var(--color-cloth) 55%, var(--color-wood));
+  background: color-mix(in oklab, var(--color-ink) 88%, black);
+  padding: 0.7rem 0.7rem 0.55rem;
+  box-shadow: inset 0 10px 18px color-mix(in oklab, black 55%, transparent);
+}
+
+.band-key {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  border: 2px solid color-mix(in oklab, var(--color-cloth) 50%, var(--color-wood));
+  background:
+    radial-gradient(circle at 35% 30%, color-mix(in oklab, white 16%, transparent), transparent 46%),
+    var(--color-wood-dark);
+  color: var(--color-cloth);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.band-key.is-on {
+  background:
+    radial-gradient(circle at 35% 30%, color-mix(in oklab, white 28%, transparent), transparent 42%),
+    color-mix(in oklab, var(--color-wood) 75%, black);
+  color: var(--color-cream);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-lamp) 50%, transparent);
+}
+
+.apron {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+.knob-label {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--color-cloth) 90%, white);
 }
 
 .well {
@@ -170,28 +337,43 @@
 }
 
 .knob {
-  width: 6rem;
-  height: 6rem;
+  width: 4.75rem;
+  height: 4.75rem;
   border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--color-cream) 22%, transparent);
+  border: 1px solid color-mix(in oklab, black 40%, transparent);
   background:
-    radial-gradient(circle at 35% 30%, color-mix(in oklab, var(--color-cream) 16%, transparent), transparent 42%),
-    var(--color-desk);
+    radial-gradient(circle at 36% 30%, color-mix(in oklab, white 22%, transparent), transparent 28%),
+    radial-gradient(circle at 50% 60%, color-mix(in oklab, var(--color-wood-dark) 30%, black), #1a100c 72%);
   box-shadow:
-    inset 0 0 0 0.55rem color-mix(in oklab, var(--color-ink) 40%, var(--color-cabinet)),
-    0 10px 24px color-mix(in oklab, var(--color-ink) 55%, transparent);
+    inset 0 0 0 0.45rem color-mix(in oklab, var(--color-wood-dark) 75%, black),
+    0 8px 0 color-mix(in oklab, black 35%, transparent),
+    0 12px 16px color-mix(in oklab, black 40%, transparent);
+}
+
+.knob-sm {
+  width: 3.15rem;
+  height: 3.15rem;
+  box-shadow:
+    inset 0 0 0 0.32rem color-mix(in oklab, var(--color-wood-dark) 75%, black),
+    0 6px 0 color-mix(in oklab, black 35%, transparent);
+}
+
+.knob.is-on {
+  box-shadow:
+    inset 0 0 0 0.32rem color-mix(in oklab, var(--color-wood) 40%, black),
+    0 6px 0 color-mix(in oklab, black 35%, transparent),
+    0 0 12px color-mix(in oklab, var(--color-lamp) 45%, transparent);
 }
 
 .knob-mark {
   position: absolute;
   left: 50%;
-  top: 0.7rem;
-  width: 3px;
-  height: 1.15rem;
+  top: 0.55rem;
+  width: 2px;
+  height: 0.9rem;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: var(--color-lamp);
-  box-shadow: 0 0 8px var(--color-lamp);
+  background: var(--color-cloth);
 }
 
 .pointer {
@@ -205,6 +387,11 @@
   z-index: 2;
 }
 
+.scale-frame .pointer {
+  background: var(--color-cloth);
+  box-shadow: none;
+}
+
 .pointer::before {
   content: "";
   position: absolute;
@@ -213,7 +400,7 @@
   transform: translateX(-50%);
   border-left: 5px solid transparent;
   border-right: 5px solid transparent;
-  border-top: 7px solid var(--color-lamp);
+  border-top: 7px solid var(--color-cloth);
 }
 
 .grille {
@@ -340,7 +527,7 @@
   .power-knob,
   .caret,
   .tap,
-  .grille-bar {
+  .eye.is-lit {
     animation: none;
     transition: none;
   }
