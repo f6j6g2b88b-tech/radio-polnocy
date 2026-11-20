@@ -157,18 +157,24 @@ export function ShortwaveNet({
   else if (others > 0) status = `Szukam korespondenta na ${settled}…`;
   else status = `Fala ${settled} jest pusta. Czekam.`;
 
+  function release() {
+    sendingRef.current = false;
+    setSending(false);
+    peekEngine()?.setNet(false, true);
+    roomRef.current?.send({ tx: false });
+    roomRef.current?.setMic(null);
+  }
+
   async function toggle() {
     if (!joined) return;
     if (sendingRef.current) {
-      sendingRef.current = false;
-      setSending(false);
-      roomRef.current?.send({ tx: false });
-      roomRef.current?.setMic(null);
+      release();
       return;
     }
     sendingRef.current = true;
     setSending(true);
     setMicError("");
+    peekEngine()?.setNet(true, false);
     try {
       if (!micRef.current) {
         micRef.current = await navigator.mediaDevices.getUserMedia({
@@ -181,8 +187,7 @@ export function ShortwaveNet({
       roomRef.current?.setMic(track);
       roomRef.current?.send({ tx: true });
     } catch {
-      sendingRef.current = false;
-      setSending(false);
+      release();
       setMicError("Przeglądarka nie dała mikrofonu. Zezwól na niego i stuknij jeszcze raz.");
     }
   }
@@ -232,9 +237,13 @@ export function ShortwaveNet({
         type="button"
         className={sending ? "net-ptt is-live" : "net-ptt"}
         data-testid="ptt"
-        disabled={!joined}
+        data-tx={sending ? "on" : "off"}
+        aria-disabled={!joined}
         aria-pressed={sending}
-        onClick={toggle}
+        onClick={(event) => {
+          event.preventDefault();
+          toggle();
+        }}
       >
         {sending ? "Nadaję" : "Nadawanie"}
       </button>

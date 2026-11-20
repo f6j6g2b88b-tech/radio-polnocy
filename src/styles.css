@@ -661,7 +661,8 @@
   user-select: none;
 }
 
-.net-ptt:disabled {
+.net-ptt:disabled,
+.net-ptt[aria-disabled="true"] {
   opacity: 0.45;
 }
 

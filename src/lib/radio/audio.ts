@@ -642,6 +642,7 @@ class Engine {
   setNet(hot: boolean, hear: boolean) {
     this.netHot = hot;
     ramp(this.voiceBus.gain, hear ? 1 : 0, this.ctx.currentTime, 0.03);
+    this.kick();
   }
 
   attachMouth(id: string, stream: MediaStream) {
