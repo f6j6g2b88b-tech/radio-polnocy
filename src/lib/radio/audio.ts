@@ -556,6 +556,9 @@ class Engine {
   private onVis: (() => void) | null = null;
   private airListeners = new Set<(status: AirStatus) => void>();
   private air: Air;
+  private voiceBus: GainNode;
+  private netHot = false;
+  private mouths = new Map<string, { src: MediaStreamAudioSourceNode; gain: GainNode }>();
 
   constructor() {
     const ctx = new AudioContext({ latencyHint: "interactive" });
@@ -573,6 +576,10 @@ class Engine {
 
     this.stationGain = ctx.createGain();
     this.stationGain.connect(this.master);
+
+    this.voiceBus = ctx.createGain();
+    this.voiceBus.gain.value = 1;
+    this.voiceBus.connect(this.master);
 
     this.samples = {
       white: makeNoise(ctx, "white"),
@@ -631,11 +638,42 @@ class Engine {
     this.kick();
   }
 
+  /** `hot` ducks the station. `hear` is false while this set is transmitting. */
+  setNet(hot: boolean, hear: boolean) {
+    this.netHot = hot;
+    ramp(this.voiceBus.gain, hear ? 1 : 0, this.ctx.currentTime, 0.03);
+  }
+
+  attachMouth(id: string, stream: MediaStream) {
+    this.detachMouth(id);
+    const src = this.ctx.createMediaStreamSource(stream);
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = 1200;
+    filter.Q.value = 0.65;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 1.6;
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.voiceBus);
+    this.mouths.set(id, { src, gain });
+    this.kick();
+  }
+
+  detachMouth(id: string) {
+    const node = this.mouths.get(id);
+    if (!node) return;
+    node.src.disconnect();
+    node.gain.disconnect();
+    this.mouths.delete(id);
+  }
+
   disposeAll() {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.retire(this.voice);
     this.voice = null;
+    for (const id of [...this.mouths.keys()]) this.detachMouth(id);
     this.air.stop();
     if (this.onVis) document.removeEventListener("visibilitychange", this.onVis);
     void this.ctx.close();
@@ -650,7 +688,7 @@ class Engine {
     const time = this.ctx.currentTime;
     this.voice?.tick(time);
     this.apply(time);
-    if (this.params.power || this.voice) this.raf = requestAnimationFrame(this.loop);
+    if (this.params.power || this.voice || this.mouths.size > 0) this.raf = requestAnimationFrame(this.loop);
     else this.raf = 0;
   };
 
@@ -665,15 +703,16 @@ class Engine {
     const strength = this.params.strength;
     const level = this.params.volume * this.params.volume;
     ramp(this.master.gain, live ? level * 0.22 : level, time, 0.08);
-    const noise = live ? 0.012 : 0.08 + 0.5 * (1 - Math.pow(strength, 0.8));
+    const noiseOpen = live ? 0.012 : 0.08 + 0.5 * (1 - Math.pow(strength, 0.8));
+    const noise = this.netHot ? Math.min(noiseOpen, 0.025) : noiseOpen;
     ramp(this.noiseGain.gain, noise, time, 0.08);
     const drift = Math.sin(time * 0.55) * 160;
     ramp(this.noiseFilter.frequency, 700 + this.params.place * 2200 + drift, time, 0.12);
     ramp(this.noiseFilter.Q, 0.55 + strength * 6.5, time, 0.1);
-    const hetAmt = live ? 0 : strength > 0.03 && strength < 0.92 ? Math.sin((strength / 0.92) * Math.PI) : 0;
+    const hetAmt = live || this.netHot ? 0 : strength > 0.03 && strength < 0.92 ? Math.sin((strength / 0.92) * Math.PI) : 0;
     ramp(this.hetGain.gain, hetAmt * 0.09, time, 0.05);
     ramp(this.het.frequency, Math.max(80, 180 + (1 - strength) * 1700), time, 0.06);
-    if (this.voice) ramp(this.voice.out.gain, live ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
+    if (this.voice) ramp(this.voice.out.gain, live || this.netHot ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
     const feed = this.params.stream && strength > 0.62 ? this.params.stream : null;
     this.air.sync(feed, level * Math.pow(Math.max(strength, 0.001), 0.8));
   }

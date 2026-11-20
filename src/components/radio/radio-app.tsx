@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { ShortwaveNet, normalizeSign } from "@/components/radio/shortwave-net";
 import { getEngine, peekEngine, type AirStatus, type Mix } from "@/lib/radio/audio";
 import { STATIONS, rdsFor, stationById, type BandId } from "@/lib/radio/stations";
 import {
@@ -25,6 +26,7 @@ type Memory = {
   pl: number;
   volume: number;
   caught: Caught[];
+  sign: string;
 };
 
 const INITIAL: Memory = {
@@ -34,6 +36,7 @@ const INITIAL: Memory = {
   pl: 94,
   volume: 0.78,
   caught: [],
+  sign: "",
 };
 
 function sanitize(raw: unknown): Memory {
@@ -53,7 +56,8 @@ function sanitize(raw: unknown): Memory {
         })
         .slice(0, 24)
     : [];
-  return { band, fm, sw, pl, volume, caught };
+  const sign = normalizeSign(typeof record.sign === "string" ? record.sign : "");
+  return { band, fm, sw, pl, volume, caught, sign };
 }
 
 function mixFrom(power: boolean, memory: Memory): Mix {
@@ -111,6 +115,7 @@ export function RadioApp() {
   const [count, setCount] = useState(0);
   const [seed, setSeed] = useState(1);
   const [air, setAir] = useState<AirStatus>("idle");
+  const [netLive, setNetLive] = useState(false);
   const reduced = useReducedMotion();
 
   const memoryRef = useRef(memory);
@@ -440,8 +445,8 @@ export function RadioApp() {
     setMemory((current) => ({ ...current, volume: next }));
   }
 
-  const eyeGap = on ? Math.max(10, 78 - tuned.strength * 68) : 82;
-  const eyeGlow = !on ? 0 : phase === "lock" ? 1 : tuned.strength * 0.55;
+  const eyeGap = on ? Math.max(10, 78 - (netLive ? 1 : tuned.strength) * 68) : 82;
+  const eyeGlow = !on ? 0 : netLive || phase === "lock" ? 1 : tuned.strength * 0.55;
 
   return (
     <main
@@ -465,10 +470,10 @@ export function RadioApp() {
           <div className="px-4 pt-4 sm:px-5">
             <div className="cloth">
               <div
-                className={phase === "lock" ? "eye is-lit" : on && tuned.strength > 0.4 ? "eye is-warm" : "eye"}
+                className={netLive || phase === "lock" ? "eye is-lit" : on && tuned.strength > 0.4 ? "eye is-warm" : "eye"}
                 style={{ ["--glow" as string]: String(eyeGlow), ["--gap" as string]: `${eyeGap}deg` }}
                 data-testid="eye"
-                data-lit={phase === "lock" ? "yes" : "no"}
+                data-lit={netLive || phase === "lock" ? "yes" : "no"}
                 aria-hidden="true"
               >
                 <span className="eye-glass" />
@@ -643,6 +648,15 @@ export function RadioApp() {
           </div>
           {deaf ? (
             <p className="px-4 pb-4 text-sm text-cream/80">Ta przeglądarka nie puszcza dźwięku. Kartka i tak się zapisze.</p>
+          ) : null}
+          {memory.band === "sw" ? (
+            <ShortwaveNet
+              on={on && !deaf}
+              freq={freq}
+              sign={memory.sign}
+              onSign={(sign) => setMemory((current) => ({ ...current, sign }))}
+              onLive={setNetLive}
+            />
           ) : null}
         </section>
 

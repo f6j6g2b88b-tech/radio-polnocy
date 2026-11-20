@@ -12,7 +12,7 @@ Nocny odbiornik w przeglądarce. Szafka jest stylizowana na lampową Syrenę. St
 - **RDS.** Na FM i na paśmie Polska: nazwa programu, gatunek i przewijany tekst. Przy słabym sygnale znaki się sypią. Fale krótkie RDS nie mają.
 - **Depesza.** Po złapaniu nocnej stacji tekst wychodzi jak z maszyny. Przy słabym sygnale litery się psują.
 - **Polskie Radio.** Dwójka, Trójka, Czwórka, Radio 24, Radio Dzieciom i Radio Kierowców lecą z internetowego strumienia, nie z anteny w telefonie. Jedynki nie ma: jej adres nie działa w przeglądarce.
-- **Dziennik nasłuchu.** Złapane stacje zostają w przeglądarce. „Dostrój” wraca na ich częstotliwość.
+- **Korespondencja.** Na falach krótkich dwie osoby z tym samym znakiem (cztery znaki) i tą samą falą słyszą się nawzajem. Przycisk **Nadawanie** trzymasz, kiedy mówisz. To internet, nie antena. Obcy bez znaku nie wchodzi.
 
 ## Jak uruchomić
 

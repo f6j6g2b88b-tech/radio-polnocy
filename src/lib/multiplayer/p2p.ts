@@ -1,3 +1,5 @@
+import { previewPathPrefix } from "@/lib/preview-path-prefix";
+
 /**
  * Full-mesh WebRTC rooms: one RTCPeerConnection per remote peer, signaled
  * through /api/rtc (see signaling.server.ts), game data flowing directly
@@ -50,6 +52,10 @@ export interface P2PRoomOptions {
   onPeersChanged?: (peers: PeerInfo[]) => void;
   /** Fires for both the unreliable "state" and reliable "reliable" channels. */
   onMessage?: (from: string, data: unknown, channel: "state" | "reliable") => void;
+  /** Remote voice, once the pair has an audio track. */
+  onAudio?: (from: string, stream: MediaStream) => void;
+  /** The pair went away; drop its voice. */
+  onAudioGone?: (from: string) => void;
   /** Fires once, on the first successful signaling poll (registration). */
   onConnected?: () => void;
 }
@@ -58,6 +64,7 @@ interface PeerSlot {
   pc: RTCPeerConnection;
   state?: RTCDataChannel;
   reliable?: RTCDataChannel;
+  micSender?: RTCRtpSender;
   makingOffer: boolean;
   ignoreOffer: boolean;
   /** ICE candidates that arrived before the remote description (buffered). */
@@ -80,6 +87,12 @@ const PING_INTERVAL_MS = 2000;
 const STALL_MS = 10_000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const SIGNAL_RETRY_DELAYS_MS = [250, 750];
+
+function rtcUrl(): string {
+  if (typeof window === "undefined") return "/api/rtc";
+  const prefix = previewPathPrefix(window.location.hostname, window.location.pathname);
+  return `${prefix ?? ""}/api/rtc`;
+}
 
 export function defaultIceServers(): RTCIceServer[] {
   const urls = (import.meta.env.VITE_STUN_URLS as string | undefined)
@@ -106,6 +119,7 @@ export class P2PRoom {
   private closed = false;
   private everPolled = false;
   private lastPeersFingerprint = "";
+  private micTrack: MediaStreamTrack | null = null;
 
   constructor(opts: P2PRoomOptions) {
     this.opts = opts;
@@ -138,12 +152,18 @@ export class P2PRoom {
     this.peers.clear();
     // Leaving the roster is the teardown broadcast: everyone's next poll
     // drops this peer and closes their side of the pair.
-    void fetch("/api/rtc", {
+    void fetch(rtcUrl(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ op: "leave", room: this.opts.room, peer: this.opts.selfId }),
       keepalive: true,
     }).catch(() => {});
+  }
+
+  /** Attach or clear the local microphone. Null means the key is up. */
+  setMic(track: MediaStreamTrack | null): void {
+    this.micTrack = track;
+    for (const slot of this.peers.values()) this.bindMic(slot);
   }
 
   /** Send on the unreliable game-state channel (drops stale packets). */
@@ -192,7 +212,7 @@ export class P2PRoom {
       name: this.opts.name ?? "",
       since: String(this.cursor),
     });
-    const res = await fetch(`/api/rtc?${params}`);
+    const res = await fetch(`${rtcUrl()}?${params}`);
     if (this.closed) return;
     if (!res.ok) throw new Error(`signaling poll failed: ${res.status}`);
     const body = (await res.json()) as RtcPollResponse;
@@ -236,6 +256,7 @@ export class P2PRoom {
       if (!alive.has(id)) {
         slot.pc.close();
         this.peers.delete(id);
+        this.opts.onAudioGone?.(id);
       }
     }
     this.emitPeers();
@@ -300,8 +321,15 @@ export class P2PRoom {
       }
     };
     pc.ondatachannel = (e) => this.attachChannel(slot, e.channel);
+    pc.ontrack = (event) => {
+      const [remote] = event.streams;
+      const stream = remote ?? new MediaStream([event.track]);
+      this.opts.onAudio?.(peerId, stream);
+    };
 
     if (initiator) {
+      slot.micSender = pc.addTransceiver("audio", { direction: "sendrecv" }).sender;
+      if (this.micTrack) void slot.micSender.replaceTrack(this.micTrack);
       // Creating the channels triggers negotiationneeded → the offer.
       this.attachChannel(
         slot,
@@ -310,6 +338,17 @@ export class P2PRoom {
       this.attachChannel(slot, pc.createDataChannel("reliable", { ordered: true }));
     }
     return slot;
+  }
+
+  private bindMic(slot: PeerSlot): void {
+    if (!slot.micSender) {
+      const transceiver = slot.pc
+        .getTransceivers()
+        .find((item) => item.receiver.track?.kind === "audio" || item.sender.track?.kind === "audio");
+      slot.micSender = transceiver?.sender;
+    }
+    if (!slot.micSender || slot.micSender.track === this.micTrack) return;
+    void slot.micSender.replaceTrack(this.micTrack);
   }
 
   private attachChannel(slot: PeerSlot, channel: RTCDataChannel): void {
@@ -403,6 +442,7 @@ export class P2PRoom {
         }
         if (this.closed) return;
         await this.flushPendingCandidates(slot);
+        this.bindMic(slot);
         if (this.closed) return;
         if (kind === "offer") {
           await slot.pc.setLocalDescription();
@@ -448,7 +488,7 @@ export class P2PRoom {
     for (let attempt = 0; ; attempt++) {
       if (this.closed) return;
       try {
-        const res = await fetch("/api/rtc", {
+        const res = await fetch(rtcUrl(), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -526,6 +566,7 @@ export class P2PRoom {
         const attempts = slot.recoveryAttempts;
         slot.pc.close();
         this.peers.delete(peerId);
+        this.opts.onAudioGone?.(peerId);
         const fresh = this.connectTo(peerId, name, true);
         if (fresh) fresh.recoveryAttempts = attempts;
         this.schedulePoll(FAST_POLL_MS);
