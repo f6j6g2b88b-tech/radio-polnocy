@@ -21,12 +21,14 @@ export function ShortwaveNet({
   freq,
   sign,
   onSign,
+  onFreq,
   onLive,
 }: {
   on: boolean;
   freq: number;
   sign: string;
   onSign: (sign: string) => void;
+  onFreq: (freq: number) => void;
   onLive: (hot: boolean) => void;
 }) {
   const channel = waveChannel(freq);
@@ -39,6 +41,8 @@ export function ShortwaveNet({
   const roomRef = useRef<P2PRoom | null>(null);
   const micRef = useRef<MediaStream | null>(null);
   const sendingRef = useRef(false);
+  const editingFreq = useRef(false);
+  const [draft, setDraft] = useState(() => String(Math.round(freq)));
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSettled(channel), 450);
@@ -104,6 +108,22 @@ export function ShortwaveNet({
     };
   }, []);
 
+  useEffect(() => {
+    if (!editingFreq.current) setDraft(String(Math.round(freq)));
+  }, [freq]);
+
+  function commitFreq() {
+    editingFreq.current = false;
+    const parsed = Number(draft.replace(",", ".").trim());
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(Math.round(freq)));
+      return;
+    }
+    const next = waveChannel(parsed);
+    onFreq(next);
+    setDraft(String(next));
+  }
+
   const hearing = remoteTx.size > 0;
   const hot = hearing || sending;
 
@@ -167,19 +187,42 @@ export function ShortwaveNet({
 
   return (
     <div className="net" data-testid="net">
-      <label className="net-sign">
-        <span>Znak</span>
-        <input
-          value={sign}
-          maxLength={4}
-          autoCapitalize="characters"
-          autoCorrect="off"
-          spellCheck={false}
-          aria-label="Wspólny znak, cztery znaki"
-          placeholder="NORD"
-          onChange={(event) => onSign(normalizeSign(event.target.value))}
-        />
-      </label>
+      <div className="net-fields">
+        <label className="net-sign">
+          <span>Znak</span>
+          <input
+            value={sign}
+            maxLength={4}
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label="Wspólny znak, cztery znaki"
+            placeholder="NORD"
+            onChange={(event) => onSign(normalizeSign(event.target.value))}
+          />
+        </label>
+        <label className="net-sign">
+          <span>Fala, kHz</span>
+          <input
+            value={draft}
+            inputMode="numeric"
+            autoComplete="off"
+            aria-label="Częstotliwość w kilohercach"
+            data-testid="freq-entry"
+            onFocus={() => {
+              editingFreq.current = true;
+            }}
+            onChange={(event) => setDraft(event.target.value.replace(/[^\d,.]/g, "").slice(0, 5))}
+            onBlur={commitFreq}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              commitFreq();
+              event.currentTarget.blur();
+            }}
+          />
+        </label>
+      </div>
       <p className="net-status" data-testid="net-status">
         {status}
       </p>

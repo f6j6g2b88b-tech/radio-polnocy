@@ -593,14 +593,17 @@
 
 .net {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.35rem 0.75rem;
-  align-items: center;
+  gap: 0.55rem;
   margin: 0 0.9rem 1rem;
   padding: 0.75rem 0.8rem 0.85rem;
   border-radius: 0.8rem;
   background: color-mix(in oklab, var(--color-ink) 55%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-cream) 14%, transparent);
+}
+
+.net-fields {
+  display: flex;
+  gap: 0.6rem;
 }
 
 .net-sign {
@@ -615,7 +618,7 @@
 }
 
 .net-sign input {
-  width: 5.2rem;
+  width: 6.4rem;
   height: 2.75rem;
   border: 0;
   border-radius: 0.45rem;
@@ -638,7 +641,6 @@
 }
 
 .net-ptt {
-  grid-column: 1 / -1;
   height: 2.75rem;
   border: 0;
   border-radius: 999px;

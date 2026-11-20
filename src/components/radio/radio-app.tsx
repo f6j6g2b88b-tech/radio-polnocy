@@ -655,6 +655,7 @@ export function RadioApp() {
               freq={freq}
               sign={memory.sign}
               onSign={(sign) => setMemory((current) => ({ ...current, sign }))}
+              onFreq={setFreq}
               onLive={setNetLive}
             />
           ) : null}
