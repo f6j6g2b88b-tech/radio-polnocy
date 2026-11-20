@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { P2PRoom, type PeerInfo } from "@/lib/multiplayer";
 import { peekEngine } from "@/lib/radio/audio";
 import { clampFreq } from "@/lib/radio/tuning";
@@ -95,6 +95,8 @@ export function ShortwaveNet({
     roomRef.current = room;
     void room.join();
     return () => {
+      sendingRef.current = false;
+      setSending(false);
       room.close();
       if (roomRef.current === room) roomRef.current = null;
       peekEngine()?.setNet(false, true);
@@ -147,15 +149,23 @@ export function ShortwaveNet({
   if (!on) status = "Włącz sieć. Potem oboje wchodzicie na tę samą falę.";
   else if (sign.length < 4) status = "Cztery znaki, te same u was obojga. Inaczej fala jest pusta.";
   else if (!joined) status = `Dostrajam falę ${channel}.`;
+  else if (sending && connected === 0) status = `Nadaję na ${settled}. Szum schodzi, na fali jeszcze nikogo.`;
+  else if (sending) status = `Nadaję na ${settled}.`;
   else if (failed > 0 && connected === 0) status = "Nie dogadaliśmy się z tą siecią. Spróbujcie innej fali.";
   else if (hearing) status = `Ktoś nadaje na ${settled}.`;
   else if (connected > 0) status = `Na fali ${settled}. Korespondentów: ${connected}.`;
   else if (others > 0) status = `Szukam korespondenta na ${settled}…`;
   else status = `Fala ${settled} jest pusta. Czekam.`;
 
-  async function begin(event: PointerEvent<HTMLButtonElement>) {
-    if (!joined || connected === 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
+  async function toggle() {
+    if (!joined) return;
+    if (sendingRef.current) {
+      sendingRef.current = false;
+      setSending(false);
+      roomRef.current?.send({ tx: false });
+      roomRef.current?.setMic(null);
+      return;
+    }
     sendingRef.current = true;
     setSending(true);
     setMicError("");
@@ -173,16 +183,8 @@ export function ShortwaveNet({
     } catch {
       sendingRef.current = false;
       setSending(false);
-      setMicError("Przeglądarka nie dała mikrofonu.");
+      setMicError("Przeglądarka nie dała mikrofonu. Zezwól na niego i stuknij jeszcze raz.");
     }
-  }
-
-  function end() {
-    if (!sendingRef.current) return;
-    sendingRef.current = false;
-    setSending(false);
-    roomRef.current?.send({ tx: false });
-    roomRef.current?.setMic(null);
   }
 
   return (
@@ -230,13 +232,9 @@ export function ShortwaveNet({
         type="button"
         className={sending ? "net-ptt is-live" : "net-ptt"}
         data-testid="ptt"
-        disabled={!joined || connected === 0}
+        disabled={!joined}
         aria-pressed={sending}
-        onPointerDown={begin}
-        onPointerUp={end}
-        onPointerCancel={end}
-        onLostPointerCapture={end}
-        onBlur={end}
+        onClick={toggle}
       >
         {sending ? "Nadaję" : "Nadawanie"}
       </button>
