@@ -14,11 +14,47 @@ Nocny odbiornik w przeglądarce. Szafka jest stylizowana na lampową Syrenę. St
 - **Polskie Radio.** Dwójka, Trójka, Czwórka, Radio 24, Radio Dzieciom i Radio Kierowców lecą z internetowego strumienia, nie z anteny w telefonie. Jedynki nie ma: jej adres nie działa w przeglądarce.
 - **Dziennik nasłuchu.** Złapane stacje zostają w przeglądarce. „Dostrój” wraca na ich częstotliwość.
 
-## Uruchomienie
+## Jak uruchomić
+
+Potrzebujesz Gita i [Node.js 22](https://nodejs.org) albo nowszego. `npm` jest w zestawie z Node.
+
+1. Sklonuj repozytorium i wejdź do katalogu:
+
+```bash
+git clone https://github.com/f6j6g2b88b-tech/radio-polnocy.git
+cd radio-polnocy
+```
+
+2. Zainstaluj zależności. Pierwszy raz trwa chwilę:
 
 ```bash
 npm install
+```
+
+3. Włącz serwer i zostaw ten terminal otwarty:
+
+```bash
 npm run dev
 ```
 
-Odbiornik wstaje na [http://127.0.0.1:8080](http://127.0.0.1:8080). Dźwięk startuje po włączeniu sieci, bo przeglądarka sama nie puszcza audio.
+4. Otwórz w przeglądarce [http://127.0.0.1:8080](http://127.0.0.1:8080).
+
+Żeby wyłączyć serwer, wróć do terminala i wciśnij `Ctrl+C`.
+
+### Jak posłuchać
+
+- Kliknij dolną gałkę **Sieć**. Dopiero wtedy przeglądarka puszcza dźwięk.
+- Lewa duża gałka stroi. **Szukaj** jedzie po paśmie i staje na stacji.
+- Prawa duża gałka to głośność: ciągnij ją w górę albo w dół.
+- Przyciski na skali: **FM** (nocne stacje), **KR** (fale krótkie), **PL** (Polskie Radio z internetu).
+- Pasmo Polska potrzebuje sieci. Reszta gra też bez niej.
+- Najlepiej w słuchawkach.
+
+Strzałki stroją. Z Shiftem skok jest większy. Strzałki w górę i w dół zmieniają głośność.
+
+### Jak coś nie wstanie
+
+- Terminal nie zna `npm` ani `node` — doinstaluj Node.js i otwórz terminal od nowa.
+- `npm run dev` pisze, że port `8080` jest zajęty — zamknij drugi serwer, który go trzyma, i odpal komendę jeszcze raz.
+- Strona jest pusta albo nie ma dźwięku — odśwież kartę i włącz **Sieć**. Nocne stacje szumią bez internetu. Polskie Radio milczy, gdy strumień nie dojdzie.
+
