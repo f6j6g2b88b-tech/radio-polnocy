@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { setImmediate } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
-import { P2PRoom, type P2PRoomOptions, type RtcPollResponse } from "./p2p.ts";
+import { P2PRoom, type PeerInfo, type P2PRoomOptions, type RtcPollResponse } from "./p2p.ts";
 
 class Channel {
   readyState: RTCDataChannelState = "connecting";
@@ -130,6 +130,11 @@ function setup(t: TestContext, pollBody: PollBody, options: Partial<P2PRoomOptio
 function poll(room: P2PRoom) {
   // Drive the next real poll without waiting for a wall-clock timer.
   return (room as unknown as { poll(): Promise<void> }).poll();
+}
+
+function watchdog(room: P2PRoom) {
+  // Advance recovery deterministically without waiting for its interval.
+  (room as unknown as { watchdog(): void }).watchdog();
 }
 
 /** A real HTTP response whose headers arrive before its JSON body finishes. */
@@ -300,6 +305,68 @@ test("replacing a stale connection also removes its old audio node", async (t) =
   assert.deepEqual(gone, ["z"]);
   assert.equal(Connection.instances.length, 2);
   assert.equal(Connection.instances[1].transceivers[0].direction, "sendrecv");
+});
+
+test("exhausting three retries notifies the UI even if the browser stays in new", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const updates: PeerInfo[][] = [];
+  const { room } = setup(t, () => ({ peers: roster, signals: [] }), {
+    onPeersChanged: (peers) => updates.push(peers),
+  });
+  await room.join();
+  assert.equal(room.peerList()[0].recoveryExhausted, false);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    now += 11_000;
+    watchdog(room);
+    assert.equal(Connection.instances.length, attempt + 1);
+    assert.equal(room.peerList()[0].recoveryExhausted, false);
+  }
+  const notifications = updates.length;
+  now += 11_000;
+  watchdog(room);
+  assert.equal(updates.length, notifications + 1, "terminal status must reach onPeersChanged");
+  assert.equal(updates.at(-1)?.[0].connectionState, "new", "preserve the real RTC state");
+  assert.equal(updates.at(-1)?.[0].recoveryExhausted, true);
+  now += 60_000;
+  watchdog(room);
+  assert.equal(Connection.instances.length, 4, "the dialer stops rebuilding after three retries");
+  assert.equal(updates.length, notifications + 1, "unchanged exhaustion is reported only once");
+});
+
+test("a late connection clears exhausted recovery and gives a later outage a fresh retry budget", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const updates: PeerInfo[][] = [];
+  const { room } = setup(t, () => ({ peers: roster, signals: [] }), {
+    selfId: "a",
+    onPeersChanged: (peers) => updates.push(peers),
+  });
+  await room.join();
+  for (let window = 0; window < 4; window++) {
+    now += 11_000;
+    watchdog(room);
+  }
+  assert.equal(Connection.instances.length, 1, "the receiver waits for the dialer's retries");
+  assert.equal(updates.at(-1)?.[0].recoveryExhausted, true);
+
+  const connection = Connection.instances[0];
+  connection.connectionState = "connected";
+  connection.onconnectionstatechange?.();
+  assert.equal(updates.at(-1)?.[0].connectionState, "connected");
+  assert.equal(updates.at(-1)?.[0].recoveryExhausted, false);
+
+  connection.connectionState = "disconnected";
+  connection.onconnectionstatechange?.();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    now += 11_000;
+    watchdog(room);
+    assert.equal(room.peerList()[0].recoveryExhausted, false);
+  }
+  now += 11_000;
+  watchdog(room);
+  assert.equal(updates.at(-1)?.[0].connectionState, "disconnected");
+  assert.equal(updates.at(-1)?.[0].recoveryExhausted, true);
 });
 
 test("signaling failure is reported and a later successful poll restores connectivity", async (t) => {

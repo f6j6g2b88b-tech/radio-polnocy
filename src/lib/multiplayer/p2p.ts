@@ -40,6 +40,8 @@ export interface PeerInfo {
   id: string;
   name: string;
   connectionState: RTCPeerConnectionState;
+  /** Watchdog retries ran out; cleared if the connection later succeeds. */
+  recoveryExhausted: boolean;
   /** Selected local ICE candidate type: host | srflx | prflx | relay. */
   candidateType: string | null;
   /** Data-channel ping RTT (ms), measured every 2s once connected. */
@@ -84,8 +86,6 @@ interface PeerSlot {
   lastProgressAt: number;
   /** Watchdog recreations (dialer) / stall windows (receiver) so far. */
   recoveryAttempts: number;
-  /** Gave up after MAX_RECOVERY_ATTEMPTS — excluded from fast-poll pressure. */
-  terminal?: boolean;
   /** One-shot: pc was already recreated to absorb a failing remote offer. */
   recreatedForOffer?: boolean;
   info: PeerInfo;
@@ -272,7 +272,7 @@ export class P2PRoom {
     for (const s of this.peers.values()) {
       // Terminal pairs (NAT-blocked after all recovery attempts) must not pin
       // the session at the 400ms fast-poll rate.
-      if (s.terminal) continue;
+      if (s.info.recoveryExhausted) continue;
       if (s.info.connectionState !== "connected") return true;
     }
     return false;
@@ -380,6 +380,7 @@ export class P2PRoom {
         id: peerId,
         name,
         connectionState: pc.connectionState,
+        recoveryExhausted: false,
         candidateType: null,
         rttMs: null,
       },
@@ -398,7 +399,7 @@ export class P2PRoom {
       }
       if (pc.connectionState === "connected") {
         slot.recoveryAttempts = 0;
-        slot.terminal = false;
+        slot.info.recoveryExhausted = false;
         void this.readCandidateType(slot);
       }
       this.emitPeers();
@@ -664,8 +665,8 @@ export class P2PRoom {
    * Stuck-pair recovery, piggybacked on the ping interval. A pair that has
    * made no progress for STALL_MS gets rebuilt by the dialer with a FRESH
    * RTCPeerConnection (new DTLS identity — fixes the suspend/resume
-   * fingerprint wedge). After MAX_RECOVERY_ATTEMPTS the pair is terminal:
-   * visible to the app as its last connectionState, ignored by fast-poll.
+   * fingerprint wedge). After MAX_RECOVERY_ATTEMPTS the app is notified via
+   * recoveryExhausted, independently of the browser's last connectionState.
    */
   private watchdog(): void {
     if (this.closed) return;
@@ -679,12 +680,16 @@ export class P2PRoom {
       if (live !== slot.info.connectionState) {
         slot.info.connectionState = live;
         if (live === "connecting" || live === "connected") slot.lastProgressAt = now;
+        if (live === "connected") {
+          slot.recoveryAttempts = 0;
+          slot.info.recoveryExhausted = false;
+        }
         this.emitPeers();
       }
-      if (slot.terminal || live === "connected") continue;
+      if (slot.info.recoveryExhausted || live === "connected") continue;
       if (now - slot.lastProgressAt <= STALL_MS) continue;
       if (slot.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-        slot.terminal = true;
+        slot.info.recoveryExhausted = true;
         this.emitPeers();
         continue;
       }
@@ -730,7 +735,14 @@ export class P2PRoom {
     // setters otherwise re-render consumers on every poll/ping.
     const list = this.peerList();
     const fingerprint = JSON.stringify(
-      list.map((p) => [p.id, p.name, p.connectionState, p.candidateType, p.rttMs]),
+      list.map((p) => [
+        p.id,
+        p.name,
+        p.connectionState,
+        p.recoveryExhausted,
+        p.candidateType,
+        p.rttMs,
+      ]),
     );
     if (fingerprint === this.lastPeersFingerprint) return;
     this.lastPeersFingerprint = fingerprint;

@@ -202,7 +202,9 @@ export function ShortwaveNet({
   }, [onLive]);
 
   const connected = peers.filter((peer) => peer.connectionState === "connected").length;
-  const failed = peers.filter((peer) => peer.connectionState === "failed").length;
+  const failed = peers.filter(
+    (peer) => peer.connectionState === "failed" || peer.recoveryExhausted,
+  ).length;
   const others = Math.max(0, peers.length);
 
   let status = "Włącz sieć, wejdź na KR i umówcie znak.";
@@ -213,11 +215,11 @@ export function ShortwaveNet({
     status = "Nie mogę połączyć się z serwerem rozmów. Ponawiam połączenie…";
   else if (!registered) status = `Łączę z falą ${settled}…`;
   else if (requesting) status = "Czekam na zgodę na mikrofon. Możesz anulować przyciskiem poniżej.";
+  else if (failed > 0 && connected === 0)
+    status = "Połączenie głosowe nie doszło. Wyłącz i włącz Sieć, aby spróbować ponownie.";
   else if (sending && connected === 0)
     status = `Mikrofon włączony na ${settled}. Czekam na połączenie z korespondentem.`;
   else if (sending) status = `Nadaję na ${settled}.`;
-  else if (failed > 0 && connected === 0)
-    status = "Połączenie głosowe nie doszło. Wyłącz i włącz Sieć, aby spróbować ponownie.";
   else if (hearing) status = `Ktoś nadaje na ${settled}.`;
   else if (connected > 0) status = `Na fali ${settled}. Korespondentów: ${connected}.`;
   else if (signaling === "retrying")
