@@ -1,5 +1,6 @@
 import type { VoiceId } from "@/lib/radio/stations";
 import { Air, type AirStatus } from "./air";
+import { RemoteVoice } from "./remote-voice";
 export type { AirStatus } from "./air";
 
 export type Mix = {
@@ -442,7 +443,7 @@ class Engine {
   private air: Air;
   private voiceBus: GainNode;
   private netHot = false;
-  private mouths = new Map<string, { src: MediaStreamAudioSourceNode; gain: GainNode }>();
+  private mouths = new Map<string, RemoteVoice>();
   private masterTarget = -1;
 
   constructor() {
@@ -511,6 +512,7 @@ class Engine {
         /* A user gesture can resume a blocked context. */
       });
     }
+    for (const mouth of this.mouths.values()) mouth.resume();
   }
 
   unlockPlayback() {
@@ -545,25 +547,14 @@ class Engine {
 
   attachMouth(id: string, stream: MediaStream) {
     this.detachMouth(id);
-    const src = this.ctx.createMediaStreamSource(stream);
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.value = 1200;
-    filter.Q.value = 0.65;
-    const gain = this.ctx.createGain();
-    gain.gain.value = 1.6;
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.voiceBus);
-    this.mouths.set(id, { src, gain });
+    this.mouths.set(id, new RemoteVoice(this.ctx, this.voiceBus, stream));
     this.kick();
   }
 
   detachMouth(id: string) {
     const node = this.mouths.get(id);
     if (!node) return;
-    node.src.disconnect();
-    node.gain.disconnect();
+    node.dispose();
     this.mouths.delete(id);
   }
 
