@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { ShortwaveNet, normalizeSign } from "@/components/radio/shortwave-net";
+import { ShortwaveNet } from "@/components/radio/shortwave-net";
+import { normalizeSign } from "@/lib/radio/shortwave-controls";
 import { getEngine, peekEngine, type AirStatus, type Mix } from "@/lib/radio/audio";
 import { STATIONS, rdsFor, stationById, type BandId } from "@/lib/radio/stations";
 import {
@@ -52,7 +53,9 @@ function sanitize(raw: unknown): Memory {
         .filter((item): item is Caught => {
           if (!item || typeof item !== "object") return false;
           const entry = item as Partial<Caught>;
-          return typeof entry.id === "string" && typeof entry.at === "number" && !!stationById(entry.id);
+          return (
+            typeof entry.id === "string" && typeof entry.at === "number" && !!stationById(entry.id)
+          );
         })
         .slice(0, 24)
     : [];
@@ -136,10 +139,7 @@ export function RadioApp() {
     [memory.band],
   );
   const caughtIds = useMemo(() => new Set(memory.caught.map((item) => item.id)), [memory.caught]);
-  const log = useMemo(
-    () => [...memory.caught].sort((a, b) => b.at - a.at),
-    [memory.caught],
-  );
+  const log = useMemo(() => [...memory.caught].sort((a, b) => b.at - a.at), [memory.caught]);
 
   function stopScan() {
     if (scanTimer.current) {
@@ -185,6 +185,7 @@ export function RadioApp() {
     if (!engine) setDeaf(true);
     else {
       setDeaf(false);
+      engine.unlockPlayback();
       engine.sync(mixFrom(true, next));
       setAudioState(engine.ctx.state);
     }
@@ -267,7 +268,8 @@ export function RadioApp() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!powerRef.current) return;
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
+        return;
       if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
         event.preventDefault();
         const dir = event.key === "ArrowRight" ? 1 : -1;
@@ -275,7 +277,10 @@ export function RadioApp() {
         setMemory((current) => {
           const spec = BANDS[current.band];
           const step = event.shiftKey ? spec.coarse : spec.fine;
-          return { ...current, [current.band]: clampFreq(current.band, current[current.band] + dir * step) };
+          return {
+            ...current,
+            [current.band]: clampFreq(current.band, current[current.band] + dir * step),
+          };
         });
       } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
         event.preventDefault();
@@ -351,12 +356,13 @@ export function RadioApp() {
   }, [phase, tuned.station.id, reduced, letter]);
 
   const corruptAmount = phase === "lock" ? Math.max(0, (0.93 - tuned.strength) * 2.2) : 0;
+  const animateCorruption = !reduced && corruptAmount > 0.04;
 
   useEffect(() => {
-    if (reduced || corruptAmount <= 0.04) return;
+    if (!animateCorruption) return;
     const timer = window.setInterval(() => setSeed((value) => (value + 17) % 997), 140);
     return () => window.clearInterval(timer);
-  }, [reduced, corruptAmount > 0.04, tuned.station.id]);
+  }, [animateCorruption, tuned.station.id]);
 
   const shown = corrupt(letter.slice(0, count), corruptAmount, seed);
   const turn = -150 + tuned.place * 300;
@@ -408,11 +414,7 @@ export function RadioApp() {
   }
 
   const heading =
-    phase === "off"
-      ? "Odbiornik śpi"
-      : phase === "static"
-        ? "Cisza na paśmie"
-        : tuned.station.name;
+    phase === "off" ? "Odbiornik śpi" : phase === "static" ? "Cisza na paśmie" : tuned.station.name;
   const body =
     phase === "off"
       ? "Włącz go. Potem prowadź skalę albo gałkę, aż szum się rozstąpi i ktoś zacznie mówić."
@@ -459,7 +461,9 @@ export function RadioApp() {
       <div className="halo" aria-hidden="true" />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-5xl flex-col gap-8 px-4 py-6 sm:px-8 sm:py-10">
         <header>
-          <p className="font-mono text-xs tracking-widest text-cream/70 uppercase">Odbiornik nocny</p>
+          <p className="font-mono text-xs tracking-widest text-cream/70 uppercase">
+            Odbiornik nocny
+          </p>
           <h1 className="font-display text-4xl text-balance sm:text-5xl">Radio Północy</h1>
           <p className="mt-2 max-w-md text-pretty text-cream/75">
             Dwanaście stacji, których nie ma w programie. Na paśmie Polska — prawdziwe anteny.
@@ -470,8 +474,17 @@ export function RadioApp() {
           <div className="px-4 pt-4 sm:px-5">
             <div className="cloth">
               <div
-                className={netLive || phase === "lock" ? "eye is-lit" : on && tuned.strength > 0.4 ? "eye is-warm" : "eye"}
-                style={{ ["--glow" as string]: String(eyeGlow), ["--gap" as string]: `${eyeGap}deg` }}
+                className={
+                  netLive || phase === "lock"
+                    ? "eye is-lit"
+                    : on && tuned.strength > 0.4
+                      ? "eye is-warm"
+                      : "eye"
+                }
+                style={{
+                  ["--glow" as string]: String(eyeGlow),
+                  ["--gap" as string]: `${eyeGap}deg`,
+                }}
                 data-testid="eye"
                 data-lit={netLive || phase === "lock" ? "yes" : "no"}
                 aria-hidden="true"
@@ -494,10 +507,16 @@ export function RadioApp() {
                 data-freq={freq}
               >
                 <span>{formatFreq(memory.band, freq)}</span>
-                <span className="font-mono text-xs tracking-widest text-cream/60">{BANDS[memory.band].unit}</span>
+                <span className="font-mono text-xs tracking-widest text-cream/60">
+                  {BANDS[memory.band].unit}
+                </span>
               </p>
               <p className="truncate font-display text-lg text-cream/80">
-                {!on ? "odbiornik śpi" : phase === "static" ? "między stacjami" : tuned.station.name}
+                {!on
+                  ? "odbiornik śpi"
+                  : phase === "static"
+                    ? "między stacjami"
+                    : tuned.station.name}
               </p>
               <div
                 className={
@@ -525,8 +544,14 @@ export function RadioApp() {
                     className="pointer-events-none absolute top-0 bottom-0 flex -translate-x-1/2 flex-col items-center"
                     style={{ left: `${dialPercent(memory.band, tick.freq)}%` }}
                   >
-                    <span className={tick.major ? "h-3 w-px bg-cream/70" : "h-2 w-px bg-cream/30"} />
-                    {tick.label ? <span className="mt-auto font-mono text-[10px] text-cream/55">{tick.label}</span> : null}
+                    <span
+                      className={tick.major ? "h-3 w-px bg-cream/70" : "h-2 w-px bg-cream/30"}
+                    />
+                    {tick.label ? (
+                      <span className="mt-auto font-mono text-[10px] text-cream/55">
+                        {tick.label}
+                      </span>
+                    ) : null}
                   </span>
                 ))}
                 {bandStations.map((station) => (
@@ -552,7 +577,11 @@ export function RadioApp() {
                 reduced={reduced}
               />
             </div>
-            <div role="radiogroup" aria-label="Zakres" className="flex flex-col justify-center gap-1.5">
+            <div
+              role="radiogroup"
+              aria-label="Zakres"
+              className="flex flex-col justify-center gap-1.5"
+            >
               {(["fm", "sw", "pl"] as const).map((band) => (
                 <button
                   key={band}
@@ -647,7 +676,9 @@ export function RadioApp() {
             </div>
           </div>
           {deaf ? (
-            <p className="px-4 pb-4 text-sm text-cream/80">Ta przeglądarka nie puszcza dźwięku. Kartka i tak się zapisze.</p>
+            <p className="px-4 pb-4 text-sm text-cream/80">
+              Ta przeglądarka nie puszcza dźwięku. Kartka i tak się zapisze.
+            </p>
           ) : null}
           {memory.band === "sw" ? (
             <ShortwaveNet
@@ -662,78 +693,120 @@ export function RadioApp() {
         </section>
 
         <div className="listen grid items-start gap-6 lg:grid-cols-2">
-            <article className="paper px-5 py-5 sm:px-7 sm:py-6" data-testid="paper" aria-label="Depesza">
-              <p className="font-mono text-xs tracking-widest uppercase">
-                {phase === "off"
-                  ? "Nasłuch · uśpiony"
-                  : `Nasłuch · ${formatFreq(memory.band, freq)} ${BANDS[memory.band].unit} · ${word}`}
-                {phase === "lock" ? ` · ${tuned.station.sign}` : ""}
-              </p>
-              <h2 className="mt-3 font-display text-3xl text-balance" data-testid="station">
-                {heading}
-              </h2>
-              <p className="mt-4 text-pretty whitespace-pre-wrap leading-normal" aria-hidden={phase === "lock"}>
-                {body}
-                {phase === "lock" && count < letter.length && !reduced ? <span className="caret" /> : null}
-              </p>
-              {noted ? <p className="mt-4 font-display text-lg italic">Wpisane do dziennika — {noted}.</p> : null}
-              {phase === "lock" && tuned.station.stream ? (
-                <p className="mt-4 font-mono text-xs tracking-widest" data-testid="stream">
-                  {air === "playing"
-                    ? "Na żywo · strumień Polskiego Radia"
+          <article
+            className="paper px-5 py-5 sm:px-7 sm:py-6"
+            data-testid="paper"
+            aria-label="Depesza"
+          >
+            <p className="font-mono text-xs tracking-widest uppercase">
+              {phase === "off"
+                ? "Nasłuch · uśpiony"
+                : `Nasłuch · ${formatFreq(memory.band, freq)} ${BANDS[memory.band].unit} · ${word}`}
+              {phase === "lock" ? ` · ${tuned.station.sign}` : ""}
+            </p>
+            <h2 className="mt-3 font-display text-3xl text-balance" data-testid="station">
+              {heading}
+            </h2>
+            <p
+              className="mt-4 text-pretty whitespace-pre-wrap leading-normal"
+              aria-hidden={phase === "lock"}
+            >
+              {body}
+              {phase === "lock" && count < letter.length && !reduced ? (
+                <span className="caret" />
+              ) : null}
+            </p>
+            {noted ? (
+              <p className="mt-4 font-display text-lg italic">Wpisane do dziennika — {noted}.</p>
+            ) : null}
+            {phase === "lock" && tuned.station.stream ? (
+              <p className="mt-4 font-mono text-xs tracking-widest" data-testid="stream">
+                {air === "playing"
+                  ? "Na żywo · strumień Polskiego Radia"
+                  : air === "blocked"
+                    ? "Dotknij przycisku poniżej, aby odblokować dźwięk."
                     : air === "lost"
                       ? "Strumień nie doszedł. Zostaw skalę, spróbuję jeszcze raz."
                       : "Łączę ze strumieniem…"}
-                </p>
-              ) : null}
-            </article>
+              </p>
+            ) : null}
+            {on && tuned.station.stream && air === "blocked" ? (
+              <button
+                type="button"
+                className="tap mt-3 min-h-11 rounded-full border border-current px-4 text-sm"
+                onClick={() => peekEngine()?.unlockPlayback()}
+              >
+                Włącz dźwięk stacji
+              </button>
+            ) : null}
+            {on &&
+            tuned.station.stream &&
+            air === "playing" &&
+            peekEngine()?.streamVolumeControl === "device" ? (
+              <p className="mt-3 text-sm">
+                Głośność tej stacji reguluj przyciskami urządzenia. Gałka na zero wycisza radio.
+              </p>
+            ) : null}
+          </article>
 
-            <section aria-label="Dziennik nasłuchu">
-              <div className="flex items-baseline justify-between gap-3">
-                <h2 className="font-display text-2xl">Dziennik nasłuchu</h2>
-                <p className="font-mono text-xs tracking-widest text-cream/60 tabular-nums">
-                  {memory.caught.length} z {STATIONS.length}
-                </p>
-              </div>
-              {log.length === 0 ? (
-                <p className="mt-3 text-cream/70">Dziennik jest pusty. Zostań na stacji chwilę, a sama się wpisze.</p>
-              ) : (
-                <ul className="mt-2 max-h-80 overflow-auto">
-                  {log.map((item) => {
-                    const station = stationById(item.id);
-                    if (!station) return null;
-                    return (
-                      <li key={item.id} className="flex items-center gap-3 border-t border-cream/15 py-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-display text-lg">{station.name}</p>
-                          <p className="font-mono text-xs text-cream/60 tabular-nums">
-                            {formatFreq(station.band, station.freq)} {BANDS[station.band].unit} · {clock(item.at)}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className="tap h-11 shrink-0 rounded-full border border-cream/20 px-4 font-mono text-xs text-cream"
-                          onClick={() => tuneTo(item.id)}
-                        >
-                          Dostrój
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-          </div>
+          <section aria-label="Dziennik nasłuchu">
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="font-display text-2xl">Dziennik nasłuchu</h2>
+              <p className="font-mono text-xs tracking-widest text-cream/60 tabular-nums">
+                {memory.caught.length} z {STATIONS.length}
+              </p>
+            </div>
+            {log.length === 0 ? (
+              <p className="mt-3 text-cream/70">
+                Dziennik jest pusty. Zostań na stacji chwilę, a sama się wpisze.
+              </p>
+            ) : (
+              <ul className="mt-2 max-h-80 overflow-auto">
+                {log.map((item) => {
+                  const station = stationById(item.id);
+                  if (!station) return null;
+                  return (
+                    <li
+                      key={item.id}
+                      className="flex items-center gap-3 border-t border-cream/15 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-display text-lg">{station.name}</p>
+                        <p className="font-mono text-xs text-cream/60 tabular-nums">
+                          {formatFreq(station.band, station.freq)} {BANDS[station.band].unit} ·{" "}
+                          {clock(item.at)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="tap h-11 shrink-0 rounded-full border border-cream/20 px-4 font-mono text-xs text-cream"
+                        onClick={() => tuneTo(item.id)}
+                      >
+                        Dostrój
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
 
         <footer className="flex flex-col gap-1 pb-4">
           <p className="hidden font-mono text-xs text-cream/50 md:block">
             Strzałki stroją. Z Shiftem skok jest większy. W górę i w dół — głośność.
           </p>
-          <p className="font-mono text-xs text-cream/50">Najlepiej w słuchawkach, przy zgaszonym świetle.</p>
+          <p className="font-mono text-xs text-cream/50">
+            Najlepiej w słuchawkach, przy zgaszonym świetle.
+          </p>
         </footer>
 
         <p className="sr-only" aria-live="polite">
-          {phase === "lock" ? `${tuned.station.name}. ${tuned.station.lines.join(" ")}` : phase === "near" ? `Blisko stacji ${tuned.station.name}.` : ""}
+          {phase === "lock"
+            ? `${tuned.station.name}. ${tuned.station.lines.join(" ")}`
+            : phase === "near"
+              ? `Blisko stacji ${tuned.station.name}.`
+              : ""}
         </p>
       </div>
     </main>
@@ -759,7 +832,8 @@ function RdsLine({
 }) {
   const service = band === "sw" ? null : rdsFor(stationId);
   const noisy = phase !== "lock" || strength < 0.93;
-  const amount = !on || !service ? 0 : phase === "lock" ? Math.max(0, (0.93 - strength) * 2.2) : 0.55;
+  const amount =
+    !on || !service ? 0 : phase === "lock" ? Math.max(0, (0.93 - strength) * 2.2) : 0.55;
   const ps = !on
     ? "--------"
     : !service
@@ -775,7 +849,11 @@ function RdsLine({
         : corrupt(service.text, amount, seed + 11);
 
   return (
-    <div className={on && service && phase !== "static" ? "rds is-on" : "rds"} data-testid="rds" data-ps={service?.ps ?? ""}>
+    <div
+      className={on && service && phase !== "static" ? "rds is-on" : "rds"}
+      data-testid="rds"
+      data-ps={service?.ps ?? ""}
+    >
       <span className="rds-tag">RDS</span>
       <span className="rds-ps">{ps}</span>
       <span className="rds-pty">{pty}</span>

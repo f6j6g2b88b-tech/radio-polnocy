@@ -6,4 +6,5 @@ export type {
   PeerRow,
   SignalRow,
   RtcPollResponse,
+  SignalingStatus,
 } from "./p2p";

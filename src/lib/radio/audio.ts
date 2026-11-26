@@ -1,4 +1,7 @@
 import type { VoiceId } from "@/lib/radio/stations";
+import { Air, type AirStatus } from "./air";
+import { RemoteVoice } from "./remote-voice";
+export type { AirStatus } from "./air";
 
 export type Mix = {
   power: boolean;
@@ -8,8 +11,6 @@ export type Mix = {
   voice: VoiceId | null;
   stream: string | null;
 };
-
-export type AirStatus = "idle" | "opening" | "playing" | "lost";
 
 type Samples = { white: AudioBuffer; brown: AudioBuffer };
 
@@ -72,7 +73,14 @@ function blip(
   };
 }
 
-function puff(ctx: AudioContext, dest: AudioNode, buffer: AudioBuffer, when: number, dur: number, peak: number) {
+function puff(
+  ctx: AudioContext,
+  dest: AudioNode,
+  buffer: AudioBuffer,
+  when: number,
+  dur: number,
+  peak: number,
+) {
   const source = ctx.createBufferSource();
   source.buffer = buffer;
   const filter = ctx.createBiquadFilter();
@@ -410,159 +418,6 @@ function assertNever(value: never): never {
   throw new Error(`Nieznany głos: ${String(value)}`);
 }
 
-const SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
-
-class Air {
-  status: AirStatus = "idle";
-  readonly output: GainNode;
-  private audio: HTMLAudioElement | null = null;
-  private hls: { destroy: () => void } | null = null;
-  private url: string | null = null;
-  private token = 0;
-  private retryAt = 0;
-  private quiet = false;
-  private primed = false;
-  private routed = false;
-  private levelTarget = -1;
-
-  constructor(
-    private ctx: AudioContext,
-    private emit: (status: AirStatus) => void,
-  ) {
-    this.output = ctx.createGain();
-    this.output.gain.value = 0;
-  }
-
-  sync(url: string | null, level: number) {
-    if (Math.abs(level - this.levelTarget) > 0.001) {
-      this.levelTarget = level;
-      this.output.gain.setTargetAtTime(level, this.ctx.currentTime, 0.04);
-    }
-    if (!url) {
-      if (this.url || this.status !== "idle") {
-        this.stop();
-        this.setStatus("idle");
-      }
-      return;
-    }
-    const audio = this.element();
-    // The element stays at full scale. The knob rides the Web Audio gain,
-    // because iOS ignores HTMLMediaElement.volume.
-    if (!this.routed) audio.volume = Math.min(1, Math.max(0, level));
-    else if (audio.volume !== 1) audio.volume = 1;
-    if (this.url === url) {
-      if (this.status === "lost" && performance.now() < this.retryAt) return;
-      if (this.status !== "lost") return;
-      this.url = null;
-      this.detach();
-    }
-    void this.open(url);
-  }
-
-  stop() {
-    this.token += 1;
-    this.url = null;
-    this.retryAt = 0;
-    this.detach();
-  }
-
-  unlock() {
-    if (this.primed) return;
-    this.primed = true;
-    const primer = new Audio();
-    primer.setAttribute("playsinline", "");
-    primer.src = SILENT_WAV;
-    void primer.play().then(
-      () => primer.pause(),
-      () => {
-        this.primed = false;
-      },
-    );
-  }
-
-  private element() {
-    if (this.audio) return this.audio;
-    const audio = new Audio();
-    audio.crossOrigin = "anonymous";
-    audio.preload = "none";
-    audio.setAttribute("playsinline", "");
-    try {
-      this.ctx.createMediaElementSource(audio).connect(this.output);
-      this.routed = true;
-    } catch {
-      this.routed = false;
-    }
-    audio.addEventListener("playing", () => {
-      if (this.quiet || !this.url) return;
-      this.setStatus("playing");
-    });
-    audio.addEventListener("error", () => {
-      if (this.quiet || !this.url) return;
-      this.fail();
-    });
-    this.audio = audio;
-    return audio;
-  }
-
-  private async open(url: string) {
-    const token = ++this.token;
-    this.detach();
-    this.url = url;
-    this.setStatus("opening");
-    const audio = this.element();
-    try {
-      const playlist = url.includes(".m3u8");
-      const native = playlist && audio.canPlayType("application/vnd.apple.mpegurl") !== "";
-      if (playlist && !native) {
-        const { default: Hls } = await import("hls.js");
-        if (token !== this.token) return;
-        if (!Hls.isSupported()) {
-          this.fail();
-          return;
-        }
-        const hls = new Hls({ maxBufferLength: 12 });
-        this.hls = hls;
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (this.quiet || !data.fatal) return;
-          this.fail();
-        });
-        hls.loadSource(url);
-        hls.attachMedia(audio);
-      } else {
-        audio.src = url;
-      }
-      if (token !== this.token) return;
-      this.quiet = false;
-      await audio.play();
-    } catch {
-      if (token === this.token) this.fail();
-    }
-  }
-
-  private fail() {
-    if (!this.url) return;
-    this.retryAt = performance.now() + 8000;
-    this.setStatus("lost");
-  }
-
-  private detach() {
-    this.quiet = true;
-    this.hls?.destroy();
-    this.hls = null;
-    if (!this.audio) return;
-    this.audio.pause();
-    this.audio.removeAttribute("src");
-    this.audio.load();
-  }
-
-  private setStatus(status: AirStatus) {
-    if (this.status === status) return;
-    this.status = status;
-    this.emit(status);
-  }
-}
-
 class Engine {
   readonly ctx: AudioContext;
   private master: GainNode;
@@ -574,14 +429,21 @@ class Engine {
   private samples: Samples;
   private voice: Rig | null = null;
   private voiceId: VoiceId | null = null;
-  private params: Mix = { power: false, volume: 0.78, strength: 0, place: 0.2, voice: null, stream: null };
+  private params: Mix = {
+    power: false,
+    volume: 0.78,
+    strength: 0,
+    place: 0.2,
+    voice: null,
+    stream: null,
+  };
   private raf = 0;
   private onVis: (() => void) | null = null;
   private airListeners = new Set<(status: AirStatus) => void>();
   private air: Air;
   private voiceBus: GainNode;
   private netHot = false;
-  private mouths = new Map<string, { src: MediaStreamAudioSourceNode; gain: GainNode }>();
+  private mouths = new Map<string, RemoteVoice>();
   private masterTarget = -1;
 
   constructor() {
@@ -645,7 +507,21 @@ class Engine {
   }
 
   resume() {
-    if (this.ctx.state !== "running") void this.ctx.resume();
+    if (this.ctx.state !== "running") {
+      void this.ctx.resume().catch(() => {
+        /* A user gesture can resume a blocked context. */
+      });
+    }
+    for (const mouth of this.mouths.values()) mouth.resume();
+  }
+
+  unlockPlayback() {
+    this.resume();
+    this.air.unlock();
+  }
+
+  get streamVolumeControl() {
+    return this.air.volumeControl;
   }
 
   onAir(listener: (status: AirStatus) => void) {
@@ -658,7 +534,6 @@ class Engine {
 
   sync(params: Mix) {
     this.params = params;
-    if (params.power) this.air.unlock();
     this.apply(this.ctx.currentTime);
     this.kick();
   }
@@ -672,25 +547,14 @@ class Engine {
 
   attachMouth(id: string, stream: MediaStream) {
     this.detachMouth(id);
-    const src = this.ctx.createMediaStreamSource(stream);
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.value = 1200;
-    filter.Q.value = 0.65;
-    const gain = this.ctx.createGain();
-    gain.gain.value = 1.6;
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.voiceBus);
-    this.mouths.set(id, { src, gain });
+    this.mouths.set(id, new RemoteVoice(this.ctx, this.voiceBus, stream));
     this.kick();
   }
 
   detachMouth(id: string) {
     const node = this.mouths.get(id);
     if (!node) return;
-    node.src.disconnect();
-    node.gain.disconnect();
+    node.dispose();
     this.mouths.delete(id);
   }
 
@@ -700,7 +564,7 @@ class Engine {
     this.retire(this.voice);
     this.voice = null;
     for (const id of [...this.mouths.keys()]) this.detachMouth(id);
-    this.air.stop();
+    this.air.dispose();
     if (this.onVis) document.removeEventListener("visibilitychange", this.onVis);
     void this.ctx.close();
   }
@@ -714,19 +578,21 @@ class Engine {
     const time = this.ctx.currentTime;
     this.voice?.tick(time);
     this.apply(time);
-    if (this.params.power || this.voice || this.mouths.size > 0) this.raf = requestAnimationFrame(this.loop);
+    if (this.params.power || this.voice || this.mouths.size > 0)
+      this.raf = requestAnimationFrame(this.loop);
     else this.raf = 0;
   };
 
   private apply(time: number) {
     this.ensureVoice();
-    const live = !!this.params.stream && this.params.strength > 0.62 && this.air.status === "playing";
+    const live =
+      !!this.params.stream && this.params.strength > 0.62 && this.air.status === "playing";
     if (!this.params.power) {
       if (this.masterTarget !== 0) {
         this.masterTarget = 0;
         ramp(this.master.gain, 0, time, 0.05);
       }
-      this.air.sync(null, 0);
+      this.air.sync(null, 0, 0);
       return;
     }
     const strength = this.params.strength;
@@ -741,16 +607,25 @@ class Engine {
     const drift = Math.sin(time * 0.55) * 160;
     ramp(this.noiseFilter.frequency, 700 + this.params.place * 2200 + drift, time, 0.12);
     ramp(this.noiseFilter.Q, 0.55 + strength * 6.5, time, 0.1);
-    const hetAmt = live || this.netHot ? 0 : strength > 0.03 && strength < 0.92 ? Math.sin((strength / 0.92) * Math.PI) : 0;
+    const hetAmt =
+      live || this.netHot
+        ? 0
+        : strength > 0.03 && strength < 0.92
+          ? Math.sin((strength / 0.92) * Math.PI)
+          : 0;
     ramp(this.hetGain.gain, hetAmt * 0.09, time, 0.05);
     ramp(this.het.frequency, Math.max(80, 180 + (1 - strength) * 1700), time, 0.06);
-    if (this.voice) ramp(this.voice.out.gain, live || this.netHot ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
+    if (this.voice)
+      ramp(this.voice.out.gain, live || this.netHot ? 0.04 : Math.pow(strength, 1.15), time, 0.07);
     const feed = this.params.stream && strength > 0.62 ? this.params.stream : null;
-    this.air.sync(feed, feed ? 0.9 * Math.pow(Math.max(strength, 0.001), 0.8) : 0);
+    this.air.sync(feed, feed ? 0.9 * Math.pow(Math.max(strength, 0.001), 0.8) : 0, level);
   }
 
   private ensureVoice() {
-    const want = this.params.power && this.params.voice && this.params.strength > 0.05 ? this.params.voice : null;
+    const want =
+      this.params.power && this.params.voice && this.params.strength > 0.05
+        ? this.params.voice
+        : null;
     if (want === this.voiceId) return;
     this.retire(this.voice);
     this.voice = null;
@@ -780,13 +655,13 @@ export function peekEngine() {
 
 export function getEngine() {
   if (globalRadio.__nightRadio) {
-    globalRadio.__nightRadio.resume();
+    globalRadio.__nightRadio.unlockPlayback();
     return globalRadio.__nightRadio;
   }
   try {
     const engine = new Engine();
     globalRadio.__nightRadio = engine;
-    engine.resume();
+    engine.unlockPlayback();
     return engine;
   } catch {
     return null;
