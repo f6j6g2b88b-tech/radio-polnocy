@@ -11,8 +11,16 @@
  * skip and no join/cursor handshake is needed.
  */
 import { z } from "zod";
-import { getSql, type Sql } from "@/lib/db";
+import type { Sql } from "@/lib/db";
 import type { PeerRow, RtcPollResponse, SignalRow } from "./p2p";
+import { needsSharedDatabase, turnIceServers } from "./ice-config.server";
+
+async function getSignalingSql(): Promise<Sql> {
+  // Import lazily so an invalid serverless deployment returns the explicit
+  // configuration error before the DB helper boots its local fallback.
+  const { getSql } = await import("@/lib/db");
+  return getSql();
+}
 
 const ID = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
 const signalSchema = z.object({
@@ -122,8 +130,11 @@ async function handleGet(url: URL): Promise<Response> {
     });
   if (!parsed.success) return json({ error: "invalid query" }, 400);
   const { room, peer, name, since } = parsed.data;
+  // Validate configuration before touching the DB. Only expiring credentials
+  // are included in the response; the shared TURN secret stays on the server.
+  const iceServers = turnIceServers(peer);
 
-  const sql = await getSql();
+  const sql = await getSignalingSql();
   await ensureSchema(sql);
   if (since === 0 || Math.random() < 0.02) await prune(sql);
   await touchPeer(sql, room, peer, name);
@@ -139,6 +150,7 @@ async function handleGet(url: URL): Promise<Response> {
     [room, peer, since],
   );
   const body: RtcPollResponse = {
+    iceServers,
     peers: await roster(sql, room),
     signals: rows.map((r) => ({
       id: r.id,
@@ -160,7 +172,7 @@ async function handlePost(request: Request): Promise<Response> {
   const parsed = postSchema.safeParse(body);
   if (!parsed.success) return json({ error: "invalid request" }, 400);
   const msg = parsed.data;
-  const sql = await getSql();
+  const sql = await getSignalingSql();
   await ensureSchema(sql);
 
   if (msg.op === "signal") {
@@ -170,12 +182,21 @@ async function handlePost(request: Request): Promise<Response> {
       [msg.room, msg.to, msg.from, msg.kind, JSON.stringify(msg.payload)],
     );
   } else {
-    await sql.query(`DELETE FROM webrtc_peers WHERE room = $1 AND peer_id = $2`, [msg.room, msg.peer]);
+    await sql.query(`DELETE FROM webrtc_peers WHERE room = $1 AND peer_id = $2`, [
+      msg.room,
+      msg.peer,
+    ]);
   }
   return json({ ok: true });
 }
 
 export async function handleSignaling(request: Request): Promise<Response> {
+  if (needsSharedDatabase()) {
+    return json(
+      { error: "signaling database not configured", code: "configuration_required" },
+      503,
+    );
+  }
   try {
     if (request.method === "GET") return await handleGet(new URL(request.url));
     if (request.method === "POST") return await handlePost(request);

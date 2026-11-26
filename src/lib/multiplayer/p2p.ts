@@ -12,6 +12,7 @@ import { previewPathPrefix } from "@/lib/preview-path-prefix";
  */
 
 export type SignalKind = "offer" | "answer" | "ice";
+export type SignalingStatus = "connecting" | "connected" | "retrying";
 
 /**
  * Wire contract between this client and the signaling relay the app provides
@@ -31,6 +32,8 @@ export interface SignalRow {
 export interface RtcPollResponse {
   peers: PeerRow[];
   signals: SignalRow[];
+  /** Server-issued TURN credentials, refreshed by subsequent polls. */
+  iceServers?: RTCIceServer[];
 }
 
 export interface PeerInfo {
@@ -56,6 +59,12 @@ export interface P2PRoomOptions {
   onAudio?: (from: string, stream: MediaStream) => void;
   /** The pair went away; drop its voice. */
   onAudioGone?: (from: string) => void;
+  /** Replay current application state to a newly opened reliable channel. */
+  onPeerReady?: (peerId: string) => void;
+  /** Signaling availability, separate from peer-to-peer connectivity. */
+  onSignalingStatus?: (status: SignalingStatus) => void;
+  /** A microphone track could not be attached to a current peer. */
+  onMicError?: (error: Error) => void;
   /** Fires once, on the first successful signaling poll (registration). */
   onConnected?: () => void;
 }
@@ -65,6 +74,8 @@ interface PeerSlot {
   state?: RTCDataChannel;
   reliable?: RTCDataChannel;
   micSender?: RTCRtpSender;
+  /** Serialize replacements so a slow old update cannot re-enable the mic. */
+  micUpdate: Promise<void>;
   makingOffer: boolean;
   ignoreOffer: boolean;
   /** ICE candidates that arrived before the remote description (buffered). */
@@ -87,6 +98,7 @@ const PING_INTERVAL_MS = 2000;
 const STALL_MS = 10_000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const SIGNAL_RETRY_DELAYS_MS = [250, 750];
+const SIGNAL_REQUEST_TIMEOUT_MS = 12_000;
 
 function rtcUrl(): string {
   if (typeof window === "undefined") return "/api/rtc";
@@ -95,7 +107,7 @@ function rtcUrl(): string {
 }
 
 export function defaultIceServers(): RTCIceServer[] {
-  const urls = (import.meta.env.VITE_STUN_URLS as string | undefined)
+  const urls = (import.meta.env?.VITE_STUN_URLS as string | undefined)
     ?.split(",")
     .map((u) => u.trim())
     .filter(Boolean);
@@ -120,9 +132,13 @@ export class P2PRoom {
   private everPolled = false;
   private lastPeersFingerprint = "";
   private micTrack: MediaStreamTrack | null = null;
+  private signalingStatus: SignalingStatus | null = null;
+  private iceServers: RTCIceServer[];
+  private requests = new Set<AbortController>();
 
   constructor(opts: P2PRoomOptions) {
     this.opts = opts;
+    this.iceServers = opts.iceServers ?? defaultIceServers();
   }
 
   /**
@@ -131,10 +147,13 @@ export class P2PRoom {
    * room: the loop and timers start regardless and the next poll retries.
    */
   async join(): Promise<void> {
+    if (this.closed || this.pingTimer) return;
+    this.setSignalingStatus("connecting");
     try {
       await this.pollOnce();
     } catch {
       // First poll can fail transiently; the scheduled loop below retries.
+      this.setSignalingStatus("retrying");
     }
     if (this.closed) return;
     this.schedulePoll(this.anyPairConnecting() ? FAST_POLL_MS : IDLE_POLL_MS);
@@ -145,11 +164,18 @@ export class P2PRoom {
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
+    this.micTrack = null;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
-    for (const slot of this.peers.values()) slot.pc.close();
-    this.peers.clear();
+    this.pollTimer = null;
+    this.pingTimer = null;
+    for (const request of this.requests) request.abort();
+    this.requests.clear();
+    for (const id of this.peers.keys()) this.dropPeer(id);
+    this.signalQueues.clear();
+    this.emitPeers();
     // Leaving the roster is the teardown broadcast: everyone's next poll
     // drops this peer and closes their side of the pair.
     void fetch(rtcUrl(), {
@@ -162,8 +188,9 @@ export class P2PRoom {
 
   /** Attach or clear the local microphone. Null means the key is up. */
   setMic(track: MediaStreamTrack | null): void {
+    if (this.closed) return;
     this.micTrack = track;
-    for (const slot of this.peers.values()) this.bindMic(slot);
+    for (const slot of this.peers.values()) void this.bindMic(slot);
   }
 
   /** Send on the unreliable game-state channel (drops stale packets). */
@@ -189,6 +216,52 @@ export class P2PRoom {
 
   // ── signaling loop ─────────────────────────────────────────────────────────
 
+  private setSignalingStatus(status: SignalingStatus): void {
+    if (this.closed || this.signalingStatus === status) return;
+    this.signalingStatus = status;
+    this.opts.onSignalingStatus?.(status);
+  }
+
+  /** Keep timeout/close cancellation active through response-body consumption. */
+  private async signalRequest<T>(
+    url: string,
+    consume: (response: Response) => T | Promise<T>,
+    init?: RequestInit,
+  ): Promise<T> {
+    const controller = new AbortController();
+    this.requests.add(controller);
+    const timer = setTimeout(() => controller.abort(), SIGNAL_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      return await consume(response);
+    } finally {
+      clearTimeout(timer);
+      this.requests.delete(controller);
+    }
+  }
+
+  private updateIceServers(servers: RTCIceServer[] | undefined): void {
+    if (this.opts.iceServers || !servers) return;
+    const next = [...defaultIceServers(), ...servers];
+    if (JSON.stringify(next) === JSON.stringify(this.iceServers)) return;
+    this.iceServers = next;
+    for (const slot of this.peers.values()) {
+      try {
+        // Refresh temporary TURN credentials for future allocation/ICE restarts.
+        slot.pc.setConfiguration({ iceServers: next });
+        // TURN refresh requests belong to the original allocation/username.
+        // A new ICE generation obtains an allocation with fresh credentials;
+        // the old media path remains available while it is negotiated. Only
+        // the dialer initiates this, avoiding simultaneous restart offers.
+        if (slot.pc.connectionState === "connected" && this.opts.selfId > slot.info.id) {
+          slot.pc.restartIce();
+        }
+      } catch {
+        // A concurrently closing pair will be rebuilt with the latest config.
+      }
+    }
+  }
+
   private schedulePoll(delay: number): void {
     if (this.closed) return;
     if (this.pollTimer) clearTimeout(this.pollTimer);
@@ -212,11 +285,16 @@ export class P2PRoom {
       name: this.opts.name ?? "",
       since: String(this.cursor),
     });
-    const res = await fetch(`${rtcUrl()}?${params}`);
+    const body = await this.signalRequest(`${rtcUrl()}?${params}`, async (response) => {
+      if (!response.ok) throw new Error(`signaling poll failed: ${response.status}`);
+      return (await response.json()) as RtcPollResponse;
+    });
     if (this.closed) return;
-    if (!res.ok) throw new Error(`signaling poll failed: ${res.status}`);
-    const body = (await res.json()) as RtcPollResponse;
-    if (this.closed) return;
+    if (!Array.isArray(body.peers) || !Array.isArray(body.signals)) {
+      throw new Error("invalid signaling response");
+    }
+    this.setSignalingStatus("connected");
+    this.updateIceServers(body.iceServers);
     if (!this.everPolled) {
       this.everPolled = true;
       this.opts.onConnected?.();
@@ -236,6 +314,7 @@ export class P2PRoom {
       await this.pollOnce();
     } catch {
       // Transient poll failures are expected (tab sleep, deploy roll); retry.
+      this.setSignalingStatus("retrying");
     }
     this.schedulePoll(this.anyPairConnecting() ? FAST_POLL_MS : IDLE_POLL_MS);
   }
@@ -252,11 +331,9 @@ export class P2PRoom {
         this.connectTo(p.id, p.name, this.opts.selfId > p.id);
       }
     }
-    for (const [id, slot] of this.peers) {
+    for (const id of this.peers.keys()) {
       if (!alive.has(id)) {
-        slot.pc.close();
-        this.peers.delete(id);
-        this.opts.onAudioGone?.(id);
+        this.dropPeer(id);
       }
     }
     this.emitPeers();
@@ -264,13 +341,36 @@ export class P2PRoom {
 
   // ── per-pair connection ────────────────────────────────────────────────────
 
+  private isCurrent(slot: PeerSlot): boolean {
+    return !this.closed && this.peers.get(slot.info.id) === slot;
+  }
+
+  private dropPeer(peerId: string): void {
+    const slot = this.peers.get(peerId);
+    if (!slot) return;
+    this.peers.delete(peerId);
+    slot.pc.onicecandidate = null;
+    slot.pc.onconnectionstatechange = null;
+    slot.pc.onnegotiationneeded = null;
+    slot.pc.ondatachannel = null;
+    slot.pc.ontrack = null;
+    for (const channel of [slot.state, slot.reliable]) {
+      if (!channel) continue;
+      channel.onopen = null;
+      channel.onmessage = null;
+    }
+    slot.pc.close();
+    this.opts.onAudioGone?.(peerId);
+  }
+
   private connectTo(peerId: string, name: string, initiator: boolean): PeerSlot | null {
     if (this.closed) return null;
     const pc = new RTCPeerConnection({
-      iceServers: this.opts.iceServers ?? defaultIceServers(),
+      iceServers: this.iceServers,
     });
     const slot: PeerSlot = {
       pc,
+      micUpdate: Promise.resolve(),
       makingOffer: false,
       ignoreOffer: false,
       pendingCandidates: [],
@@ -287,9 +387,11 @@ export class P2PRoom {
     this.peers.set(peerId, slot);
 
     pc.onicecandidate = (e) => {
-      if (e.candidate) void this.sendSignal(peerId, "ice", e.candidate.toJSON());
+      if (this.isCurrent(slot) && e.candidate)
+        void this.sendSignal(peerId, "ice", e.candidate.toJSON());
     };
     pc.onconnectionstatechange = () => {
+      if (!this.isCurrent(slot)) return;
       slot.info.connectionState = pc.connectionState;
       if (pc.connectionState === "connecting" || pc.connectionState === "connected") {
         slot.lastProgressAt = Date.now();
@@ -310,9 +412,11 @@ export class P2PRoom {
       }
     };
     pc.onnegotiationneeded = async () => {
+      if (!this.isCurrent(slot)) return;
       try {
         slot.makingOffer = true;
         await pc.setLocalDescription();
+        if (!this.isCurrent(slot)) return;
         await this.sendSignal(peerId, "offer", pc.localDescription!.toJSON());
       } catch {
         // A failed offer is retried on the next negotiationneeded.
@@ -320,8 +424,11 @@ export class P2PRoom {
         slot.makingOffer = false;
       }
     };
-    pc.ondatachannel = (e) => this.attachChannel(slot, e.channel);
+    pc.ondatachannel = (e) => {
+      if (this.isCurrent(slot)) this.attachChannel(slot, e.channel);
+    };
     pc.ontrack = (event) => {
+      if (!this.isCurrent(slot)) return;
       const [remote] = event.streams;
       const stream = remote ?? new MediaStream([event.track]);
       this.opts.onAudio?.(peerId, stream);
@@ -329,7 +436,7 @@ export class P2PRoom {
 
     if (initiator) {
       slot.micSender = pc.addTransceiver("audio", { direction: "sendrecv" }).sender;
-      if (this.micTrack) void slot.micSender.replaceTrack(this.micTrack);
+      void this.bindMic(slot);
       // Creating the channels triggers negotiationneeded → the offer.
       this.attachChannel(
         slot,
@@ -340,24 +447,48 @@ export class P2PRoom {
     return slot;
   }
 
-  private bindMic(slot: PeerSlot): void {
-    if (!slot.micSender) {
+  private bindMic(slot: PeerSlot): Promise<void> {
+    let desired: MediaStreamTrack | null = null;
+    const update = slot.micUpdate.then(async () => {
+      if (!this.isCurrent(slot)) return;
+      desired = this.micTrack;
       const transceiver = slot.pc
         .getTransceivers()
-        .find((item) => item.receiver.track?.kind === "audio" || item.sender.track?.kind === "audio");
-      slot.micSender = transceiver?.sender;
-    }
-    if (!slot.micSender || slot.micSender.track === this.micTrack) return;
-    void slot.micSender.replaceTrack(this.micTrack);
+        .find(
+          (item) => item.receiver.track?.kind === "audio" || item.sender.track?.kind === "audio",
+        );
+      if (!transceiver || transceiver.direction === "stopped") return;
+      // A transceiver created by setRemoteDescription starts recvonly.
+      // replaceTrack alone cannot make its answer offer a return audio path.
+      // Negotiate sendrecv even with no microphone yet, so either person can
+      // start speaking later without another offer/answer exchange.
+      if (transceiver.direction !== "sendrecv") transceiver.direction = "sendrecv";
+      slot.micSender = transceiver.sender;
+      if (slot.micSender.track !== desired) await slot.micSender.replaceTrack(desired);
+    });
+    slot.micUpdate = update.catch((error: unknown) => {
+      // The consumer releases/stops capture after an attach failure. A failed
+      // null cleanup must not re-enter that callback indefinitely.
+      if (!this.isCurrent(slot) || desired === null || desired !== this.micTrack) return;
+      this.opts.onMicError?.(error instanceof Error ? error : new Error(String(error)));
+    });
+    return slot.micUpdate;
   }
 
   private attachChannel(slot: PeerSlot, channel: RTCDataChannel): void {
+    if (channel.label !== "state" && channel.label !== "reliable") {
+      channel.close();
+      return;
+    }
     if (channel.label === "state") slot.state = channel;
     else slot.reliable = channel;
     channel.onopen = () => {
+      if (!this.isCurrent(slot)) return;
       slot.lastProgressAt = Date.now();
+      if (channel.label === "reliable") this.opts.onPeerReady?.(slot.info.id);
     };
     channel.onmessage = (e) => {
+      if (!this.isCurrent(slot)) return;
       let msg: { t: string; d?: unknown };
       try {
         msg = JSON.parse(e.data as string) as { t: string; d?: unknown };
@@ -431,8 +562,7 @@ export class P2PRoom {
           if (kind !== "offer" || slot.recreatedForOffer) throw err;
           const attempts = slot.recoveryAttempts;
           const name = slot.info.name;
-          slot.pc.close();
-          this.peers.delete(from);
+          this.dropPeer(from);
           const fresh = this.connectTo(from, name, false);
           if (!fresh) return;
           fresh.recoveryAttempts = attempts;
@@ -442,7 +572,7 @@ export class P2PRoom {
         }
         if (this.closed) return;
         await this.flushPendingCandidates(slot);
-        this.bindMic(slot);
+        await this.bindMic(slot);
         if (this.closed) return;
         if (kind === "offer") {
           await slot.pc.setLocalDescription();
@@ -488,7 +618,7 @@ export class P2PRoom {
     for (let attempt = 0; ; attempt++) {
       if (this.closed) return;
       try {
-        const res = await fetch(rtcUrl(), {
+        const res = await this.signalRequest(rtcUrl(), (response) => response, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -564,9 +694,7 @@ export class P2PRoom {
         // We are the dialer: rebuild the pair from scratch.
         const { name } = slot.info;
         const attempts = slot.recoveryAttempts;
-        slot.pc.close();
-        this.peers.delete(peerId);
-        this.opts.onAudioGone?.(peerId);
+        this.dropPeer(peerId);
         const fresh = this.connectTo(peerId, name, true);
         if (fresh) fresh.recoveryAttempts = attempts;
         this.schedulePoll(FAST_POLL_MS);

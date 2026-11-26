@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
   appNameFromHost,
-  createHeadInjector,
+  createHeadInjector as createSourceHeadInjector,
   grokXCreatorHeadTags,
-  injectGrokPwaHead,
+  injectGrokPwaHead as injectSourceGrokPwaHead,
   isDocumentPath,
   isInstallQuery,
   publicAppHost,
@@ -20,6 +20,30 @@ import {
 import { renderInstallPage } from "./grok-pwa-plugin.mjs";
 
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const EMPTY_ROOT = mkdtempSync(join(tmpdir(), "grok-pwa-fixture-"));
+const envKeys = [
+  "VITE_PUBLIC_HOSTNAME", "VITE_PROJECT_ID", "VITE_GROK_EXTENSIONS",
+  "VITE_OG_SERVICE_URL", "X_CREATOR", "X_CREATOR_ID",
+];
+const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+for (const key of envKeys) delete process.env[key];
+after(() => {
+  rmSync(EMPTY_ROOT, { recursive: true, force: true });
+  for (const [key, value] of originalEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+// A project's name/card must not affect tests of the template's fallbacks.
+// Cases testing filesystem discovery pass their own populated cwd explicitly.
+function injectGrokPwaHead(html, ctx = {}) {
+  return injectSourceGrokPwaHead(html, { cwd: EMPTY_ROOT, ...ctx });
+}
+
+function createHeadInjector(ctx = {}) {
+  return createSourceHeadInjector({ cwd: EMPTY_ROOT, ...ctx });
+}
 
 test("injects before </head>", () => {
   const out = injectGrokPwaHead("<html><head><title>x</title></head><body></body></html>");

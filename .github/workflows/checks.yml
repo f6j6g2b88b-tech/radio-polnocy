@@ -1,0 +1,89 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.12.0", "24"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+        id: build
+      - name: Install browser
+        id: browser_install
+        if: matrix.node == '24'
+        run: npx playwright install --with-deps chromium
+      - name: Start development server
+        id: dev_server
+        if: matrix.node == '24'
+        run: |
+          mkdir -p artifacts/browser/dev
+          npm run dev > artifacts/browser/dev/server.log 2>&1 &
+          for attempt in {1..60}; do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:8080/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat artifacts/browser/dev/server.log
+          exit 1
+      - name: Check development build in browser
+        if: matrix.node == '24'
+        env:
+          RADIO_TEST_URL: http://127.0.0.1:8080
+          RADIO_TEST_ARTIFACT_DIR: artifacts/browser/dev
+        run: npm run test:browser 2>&1 | tee artifacts/browser/dev/test.log
+      - name: Start production preview
+        id: preview_server
+        # Exercise built output even when the development browser check failed.
+        if: ${{ !cancelled() && matrix.node == '24' && steps.build.outcome == 'success' && steps.browser_install.outcome == 'success' }}
+        run: |
+          mkdir -p artifacts/browser/preview
+          npm run preview > artifacts/browser/preview/server.log 2>&1 &
+          for attempt in {1..60}; do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:8081/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat artifacts/browser/preview/server.log
+          exit 1
+      - name: Check production build in browser
+        if: ${{ !cancelled() && matrix.node == '24' && steps.preview_server.outcome == 'success' }}
+        env:
+          RADIO_TEST_URL: http://127.0.0.1:8081
+          RADIO_TEST_ARTIFACT_DIR: artifacts/browser/preview
+        run: npm run test:browser 2>&1 | tee artifacts/browser/preview/test.log
+      - name: Upload browser results and logs
+        if: always() && matrix.node == '24'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: radio-browser-results
+          path: artifacts/browser/
+          retention-days: 7
+          if-no-files-found: warn
