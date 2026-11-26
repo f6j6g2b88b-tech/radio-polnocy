@@ -16,7 +16,7 @@ Nocny odbiornik w przeglądarce. Szafka jest stylizowana na lampową Syrenę. St
 
 ## Jak uruchomić
 
-Potrzebujesz Gita i [Node.js](https://nodejs.org) w wersji **22.12.0 lub nowszej**. `npm` jest w zestawie z Node. CI sprawdza wersję minimalną i linię Node 24.
+Potrzebujesz Gita i [Node.js](https://nodejs.org) w wersji **22.13.0 lub nowszej z linii 22 albo w wersji 24 lub nowszej**. `npm` jest w zestawie z Node. CI sprawdza wersję minimalną i linię Node 24.
 
 1. Sklonuj repozytorium i wejdź do katalogu:
 

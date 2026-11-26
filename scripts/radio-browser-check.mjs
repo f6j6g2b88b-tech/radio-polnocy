@@ -10,12 +10,57 @@ if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
 }
 const output = resolve(process.env.RADIO_TEST_ARTIFACT_DIR || "artifacts/radio-browser");
 await mkdir(output, { recursive: true });
+
+function microphoneWave() {
+  const sampleRate = 48_000;
+  const frames = sampleRate * 4;
+  const wav = Buffer.alloc(44 + frames * 2);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); // PCM
+  wav.writeUInt16LE(1, 22); // mono
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(frames * 2, 40);
+  let phase = 0;
+  for (let i = 0; i < frames; i++) {
+    const time = i / sampleRate;
+    // Voiced harmonics with changing pitch and syllable-like amplitude. Keep
+    // app echo cancellation/noise suppression enabled; a fixed tone or Chrome's
+    // short default beep is a poor speech fixture for those processors.
+    const pitch = 170 + 45 * Math.sin(2 * Math.PI * 0.75 * time);
+    phase += (2 * Math.PI * pitch) / sampleRate;
+    const envelope = 0.15 + 0.85 * Math.sin(2 * Math.PI * 1.75 * time) ** 2;
+    const voice =
+      0.35 * Math.sin(phase) +
+      0.25 * Math.sin(phase * 3) +
+      0.25 * Math.sin(phase * 5) +
+      0.15 * Math.sin(phase * 7);
+    wav.writeInt16LE(Math.round(0.7 * envelope * voice * 32_767), 44 + i * 2);
+  }
+  return wav;
+}
+
+// Chromium's documented file source loops WAV input through real getUserMedia:
+// https://chromium.googlesource.com/chromium/src/+/HEAD/media/base/media_switches.cc
+const microphoneFixture = resolve(output, "microphone-fixture.wav");
+await writeFile(microphoneFixture, microphoneWave());
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
     ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
     : {}),
-  args: ["--no-sandbox", "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
+  args: [
+    "--no-sandbox",
+    "--use-fake-ui-for-media-stream",
+    "--use-fake-device-for-media-stream",
+    `--use-file-for-fake-audio-capture=${microphoneFixture}`,
+  ],
 });
 const errors = [];
 const checks = [];
@@ -24,7 +69,7 @@ const sign = Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, "X")
 async function makePage(viewport) {
   const context = await browser.newContext({ viewport, permissions: ["microphone"] });
   await context.addInitScript(() => {
-    window.__radioTest = { connections: [], tracks: [] };
+    window.__radioTest = { connections: [], tracks: [], captureSamples: [] };
     const NativePeerConnection = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends NativePeerConnection {
       constructor(config) {
@@ -96,29 +141,172 @@ async function waitForCaptureStopped(page) {
 async function inboundAudio(page) {
   return page.evaluate(async () => {
     let packets = 0;
-    let energy = 0;
+    let energy = null;
+    const streams = [];
     for (const connection of window.__radioTest.connections) {
       if (connection.connectionState !== "connected") continue;
       const stats = await connection.getStats();
       stats.forEach((entry) => {
         if (entry.type === "inbound-rtp" && entry.kind === "audio") {
           packets += entry.packetsReceived ?? 0;
-          energy += entry.totalAudioEnergy ?? 0;
+          if (typeof entry.totalAudioEnergy === "number") {
+            energy = (energy ?? 0) + entry.totalAudioEnergy;
+          }
+          streams.push({ ...entry });
         }
       });
     }
-    return { packets, energy };
+    return { packets, energy, energyReported: energy !== null, streams };
   });
 }
 
-async function waitForAudio(page, before = { packets: 0, energy: 0 }) {
+async function waitForRtp(page, before = { packets: 0 }) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const stats = await inboundAudio(page);
-    if (stats.packets > before.packets + 10 && stats.energy > before.energy) return stats;
+    // totalAudioEnergy is optional in RTP stats. Packet progress verifies
+    // transport; the separate remote-only Web Audio RMS check verifies sound.
+    if (stats.packets > before.packets + 10) return stats;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  assert.fail(`No audible incoming RTP: ${JSON.stringify(await inboundAudio(page))}`);
+  assert.fail(`No incoming audio RTP progress: ${JSON.stringify(await inboundAudio(page))}`);
+}
+
+async function audioDiagnostics(page) {
+  return page.evaluate(async () => {
+    const describeTrack = (track) =>
+      track
+        ? {
+            id: track.id,
+            kind: track.kind,
+            enabled: track.enabled,
+            muted: track.muted,
+            readyState: track.readyState,
+            settings: track.getSettings(),
+          }
+        : null;
+    const peers = [];
+    for (const connection of window.__radioTest.connections) {
+      const audioStats = [];
+      try {
+        const stats = await connection.getStats();
+        stats.forEach((entry) => {
+          if (
+            ["media-source", "outbound-rtp", "inbound-rtp", "remote-inbound-rtp"].includes(
+              entry.type,
+            ) &&
+            (entry.kind === "audio" || entry.mediaType === "audio")
+          ) {
+            audioStats.push({ ...entry });
+          }
+        });
+      } catch (error) {
+        audioStats.push({ error: String(error) });
+      }
+      peers.push({
+        connectionState: connection.connectionState,
+        signalingState: connection.signalingState,
+        iceConnectionState: connection.iceConnectionState,
+        transceivers: connection.getTransceivers().map((item) => ({
+          mid: item.mid,
+          direction: item.direction,
+          currentDirection: item.currentDirection,
+          sender: describeTrack(item.sender.track),
+          receiver: describeTrack(item.receiver.track),
+        })),
+        audioStats,
+      });
+    }
+    const engine = window.__nightRadio;
+    return {
+      capturedTracks: window.__radioTest.tracks.map(describeTrack),
+      captureSamples: window.__radioTest.captureSamples,
+      engine: engine
+        ? {
+            contextState: engine.ctx.state,
+            voices: engine.mouths.size,
+            voiceGain: engine.voiceBus.gain.value,
+            masterGain: engine.master.gain.value,
+          }
+        : null,
+      peers,
+    };
+  });
+}
+
+async function waitForCapturedAudio(page) {
+  const sample = await page.evaluate(async () => {
+    const engine = window.__nightRadio;
+    const track = window.__radioTest.tracks.find(
+      (item) => item.kind === "audio" && item.readyState === "live",
+    );
+    if (!engine || !track) throw new Error("No live captured microphone to measure");
+    const source = engine.ctx.createMediaStreamSource(new MediaStream([track]));
+    const analyser = engine.ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    const silentOutput = engine.ctx.createGain();
+    silentOutput.gain.value = 0;
+    source.connect(analyser);
+    analyser.connect(silentOutput);
+    silentOutput.connect(engine.ctx.destination);
+    const values = new Float32Array(analyser.fftSize);
+    const deadline = performance.now() + 5000;
+    let peakRms = 0;
+    try {
+      while (performance.now() < deadline) {
+        analyser.getFloatTimeDomainData(values);
+        const rms = Math.sqrt(
+          values.reduce((sum, value) => sum + value * value, 0) / values.length,
+        );
+        peakRms = Math.max(peakRms, rms);
+        if (peakRms > 0.00001 && track.enabled && !track.muted) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const result = {
+        trackId: track.id,
+        contextState: engine.ctx.state,
+        enabled: track.enabled,
+        muted: track.muted,
+        readyState: track.readyState,
+        settings: track.getSettings(),
+        peakRms,
+      };
+      window.__radioTest.captureSamples.push(result);
+      return result;
+    } finally {
+      source.disconnect();
+      analyser.disconnect();
+      silentOutput.disconnect();
+    }
+  });
+  assert.ok(
+    sample.contextState === "running" &&
+      sample.readyState === "live" &&
+      sample.enabled &&
+      !sample.muted &&
+      sample.peakRms > 0.00001,
+    `Captured microphone is silent before WebRTC: ${JSON.stringify(sample)}`,
+  );
+  return sample;
+}
+
+async function waitForSendingTrack(page) {
+  await page.waitForFunction(() =>
+    window.__radioTest.connections.some(
+      (connection) =>
+        connection.connectionState === "connected" &&
+        connection.getTransceivers().some((item) => {
+          const track = item.sender.track;
+          return (
+            item.currentDirection === "sendrecv" &&
+            track?.kind === "audio" &&
+            track.readyState === "live" &&
+            track.enabled &&
+            !track.muted
+          );
+        }),
+    ),
+  );
 }
 
 async function waitForPlayback(page) {
@@ -199,12 +387,15 @@ try {
   await join(first);
   await first.getByTestId("ptt").click();
   await waitForTx(first, true);
+  const captureFromFirst = await waitForCapturedAudio(first);
   checks.push("transmission starts on an empty channel");
 
   second = await makePage({ width: 390, height: 844 });
   await join(second);
   await second.getByTestId("net-status").filter({ hasText: "Ktoś nadaje" }).waitFor();
-  const toSecond = await waitForAudio(second);
+  await waitForSendingTrack(first);
+  const toSecond = await waitForRtp(second);
+  const firstSending = await audioDiagnostics(first);
   const playbackToSecond = await waitForPlayback(second);
   checks.push("late joiner receives transmitting state, non-silent RTP and Web Audio playback");
   await checkLayout(second, "mobile.png");
@@ -226,8 +417,11 @@ try {
   const before = await inboundAudio(first);
   await second.getByTestId("ptt").click();
   await waitForTx(second, true);
+  const captureFromSecond = await waitForCapturedAudio(second);
+  await waitForSendingTrack(second);
   await first.getByTestId("net-status").filter({ hasText: "Ktoś nadaje" }).waitFor();
-  const toFirst = await waitForAudio(first, before);
+  const toFirst = await waitForRtp(first, before);
+  const secondSending = await audioDiagnostics(second);
   const playbackToFirst = await waitForPlayback(first);
   checks.push(
     "reverse transmission reaches Web Audio playback and stopped sender releases capture",
@@ -244,7 +438,9 @@ try {
   const beforeReconnect = await inboundAudio(first);
   await second.getByTestId("ptt").click();
   await waitForTx(second, true);
-  await waitForAudio(first, beforeReconnect);
+  await waitForCapturedAudio(second);
+  await waitForSendingTrack(second);
+  await waitForRtp(first, beforeReconnect);
   const playbackAfterReconnect = await waitForPlayback(first);
   await second.getByTestId("freq-entry").fill("7200");
   await second.getByTestId("freq-entry").press("Enter");
@@ -289,6 +485,10 @@ try {
     checks,
     toFirst,
     toSecond,
+    captureFromFirst,
+    captureFromSecond,
+    firstSending,
+    secondSending,
     playbackToFirst,
     playbackToSecond,
     playbackAfterReconnect,
@@ -298,18 +498,23 @@ try {
   await writeFile(resolve(output, "verdict.json"), JSON.stringify(verdict, null, 2));
   console.log(JSON.stringify(verdict, null, 2));
 } catch (error) {
+  const diagnostics = {};
   for (const [label, page] of [
     ["first", first],
     ["second", second],
   ]) {
     if (page && !page.isClosed()) {
+      diagnostics[label] = await audioDiagnostics(page).catch((failure) => ({
+        error: String(failure),
+      }));
       await page
         .screenshot({ path: resolve(output, `${label}-failure.png`), fullPage: true })
         .catch(() => {});
     }
   }
-  const verdict = { ok: false, checks, errors, error: String(error?.stack || error) };
+  const verdict = { ok: false, checks, errors, diagnostics, error: String(error?.stack || error) };
   await writeFile(resolve(output, "verdict.json"), JSON.stringify(verdict, null, 2));
+  console.error(JSON.stringify(verdict, null, 2));
   throw error;
 } finally {
   await browser.close();
