@@ -68,13 +68,12 @@ const sign = Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, "X")
 
 async function makePage(viewport) {
   const context = await browser.newContext({ viewport, permissions: ["microphone"] });
-  await context.addInitScript(() => {
+  await context.addInitScript((relayOnly) => {
     window.__radioTest = { connections: [], tracks: [], captureSamples: [] };
     const NativePeerConnection = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends NativePeerConnection {
       constructor(config) {
-        // All peers run on this local machine. The check needs no external STUN/TURN.
-        super({ ...config, iceServers: [] });
+        super(relayOnly ? { ...config, iceTransportPolicy: "relay" } : { ...config, iceServers: [] });
         window.__radioTest.connections.push(this);
       }
     };
@@ -84,7 +83,7 @@ async function makePage(viewport) {
       window.__radioTest.tracks.push(...stream.getTracks());
       return stream;
     };
-  });
+  }, process.env.RADIO_TEST_RELAY === "1");
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);
   page.on("pageerror", (error) => errors.push(error.message));
@@ -410,6 +409,19 @@ try {
     assert.ok(directions.every((direction) => direction === "sendrecv"));
   }
   checks.push("both participants negotiated sendrecv");
+  if (process.env.RADIO_TEST_RELAY === "1") {
+    for (const page of [first, second]) {
+      const type = await page.evaluate(async () => {
+        const pc = window.__radioTest.connections.find((conn) => conn.connectionState === "connected");
+        const stats = await pc.getStats();
+        const transport = [...stats.values()].find((item) => item.type === "transport" && item.selectedCandidatePairId);
+        const pair = stats.get(transport.selectedCandidatePairId);
+        return stats.get(pair.localCandidateId).candidateType;
+      });
+      assert.equal(type, "relay");
+    }
+    checks.push("both browsers selected TURN relay candidates");
+  }
 
   await first.getByTestId("ptt").click();
   await waitForTx(first, false);
@@ -478,6 +490,25 @@ try {
   assert.deepEqual(await readJournal(first), savedJournal, "rendered journal survives reload");
   checks.push("scanning catches a station and tuning/rendered journal persist after reload");
 
+  await first.getByRole("button", { name: "Zapisz stację" }).click();
+  await first.waitForFunction(() => JSON.parse(localStorage.getItem("radio-polnocy-v1")).presets[0]);
+  await first.reload();
+  await first.getByTestId("band-sw").click();
+  await first.getByLabel("Ulubione").selectOption("5");
+  await first.getByRole("button", { name: "Zapisz stację" }).click();
+  await first.getByLabel("Ulubione").selectOption("0");
+  await first.getByRole("button", { name: "Włącz stację" }).click();
+  assert.equal(await first.getByTestId("freq").getAttribute("data-freq"), savedFrequency);
+  assert.equal(await first.getByTestId("band-fm").getAttribute("aria-checked"), "true");
+  await first.clock.install();
+  await first.getByLabel("Wyłącznik czasowy").selectOption("15");
+  await first.getByLabel("Wyłącznik czasowy").selectOption("0");
+  await first.clock.fastForward("15:01");
+  assert.equal(await first.getByTestId("power").getAttribute("aria-checked"), "true");
+  await first.getByLabel("Wyłącznik czasowy").selectOption("15");
+  await first.clock.fastForward("15:01");
+  await first.waitForFunction(() => document.querySelector('[data-testid="power"]').getAttribute("aria-checked") === "false");
+  checks.push("favorites persist independently and sleep timer cancels or powers off");
   assert.deepEqual(errors, [], "no uncaught page or console errors");
   const verdict = {
     ok: true,

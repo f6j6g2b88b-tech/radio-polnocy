@@ -58,12 +58,36 @@ jobs:
           RADIO_TEST_URL: http://127.0.0.1:8080
           RADIO_TEST_ARTIFACT_DIR: artifacts/browser/dev
         run: npm run test:browser 2>&1 | tee artifacts/browser/dev/test.log
+      - name: Start isolated PostgreSQL and TURN for the preview test
+        if: matrix.node == '24'
+        run: |
+          sudo systemctl start postgresql
+          pg_password=$(openssl rand -hex 24)
+          echo "::add-mask::$pg_password"
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE radio_ci LOGIN PASSWORD '$pg_password'"
+          sudo -u postgres createdb -O radio_ci radio_ci
+          relay_ip=$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+          test -n "$relay_ip"
+          relay_secret=$(openssl rand -hex 32)
+          echo "::add-mask::$relay_secret"
+          sudo apt-get update -qq
+          sudo apt-get install -y coturn
+          turnserver -n --no-cli --no-tls --no-dtls --no-multicast-peers --realm=radio.test \
+            --listening-ip="$relay_ip" --relay-ip="$relay_ip" --listening-port=3479 \
+            --min-port=49200 --max-port=49299 --use-auth-secret --static-auth-secret="$relay_secret" \
+            --pidfile="$RUNNER_TEMP/radio-turn.pid" --log-file="$RUNNER_TEMP/radio-turn.log" --daemon
+          {
+            echo "DATABASE_URL=postgresql://radio_ci:$pg_password@127.0.0.1/radio_ci"
+            echo "TURN_URLS=turn:$relay_ip:3479?transport=udp"
+            echo "TURN_SHARED_SECRET=$relay_secret"
+          } >> "$GITHUB_ENV"
       - name: Start production preview
         id: preview_server
         # Exercise built output even when the development browser check failed.
         if: ${{ !cancelled() && matrix.node == '24' && steps.build.outcome == 'success' && steps.browser_install.outcome == 'success' }}
         run: |
           mkdir -p artifacts/browser/preview
+          npm run db:migrate
           npm run preview > artifacts/browser/preview/server.log 2>&1 &
           for attempt in {1..60}; do
             if curl --fail --silent --max-time 2 http://127.0.0.1:8081/ > /dev/null; then
@@ -76,6 +100,7 @@ jobs:
       - name: Check production build in browser
         if: ${{ !cancelled() && matrix.node == '24' && steps.preview_server.outcome == 'success' }}
         env:
+          RADIO_TEST_RELAY: "1"
           RADIO_TEST_URL: http://127.0.0.1:8081
           RADIO_TEST_ARTIFACT_DIR: artifacts/browser/preview
         run: npm run test:browser 2>&1 | tee artifacts/browser/preview/test.log
