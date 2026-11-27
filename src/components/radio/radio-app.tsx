@@ -20,6 +20,8 @@ const STORAGE_KEY = "radio-polnocy-v1";
 
 type Caught = { id: string; at: number };
 
+type Preset = { band: BandId; freq: number };
+
 type Memory = {
   band: BandId;
   fm: number;
@@ -27,6 +29,7 @@ type Memory = {
   pl: number;
   volume: number;
   caught: Caught[];
+  presets: (Preset | null)[];
   sign: string;
 };
 
@@ -37,6 +40,7 @@ const INITIAL: Memory = {
   pl: 94,
   volume: 0.78,
   caught: [],
+  presets: Array(6).fill(null),
   sign: "",
 };
 
@@ -60,7 +64,12 @@ function sanitize(raw: unknown): Memory {
         .slice(0, 24)
     : [];
   const sign = normalizeSign(typeof record.sign === "string" ? record.sign : "");
-  return { band, fm, sw, pl, volume, caught, sign };
+  const presets = INITIAL.presets.map((_, i) => {
+    const entry = Array.isArray(record.presets) ? record.presets[i] : null;
+    if (!entry || !["fm", "sw", "pl"].includes(entry.band) || !Number.isFinite(entry.freq)) return null;
+    return { band: entry.band, freq: clampFreq(entry.band, entry.freq) };
+  });
+  return { band, fm, sw, pl, volume, caught, sign, presets };
 }
 
 function mixFrom(power: boolean, memory: Memory): Mix {
@@ -119,6 +128,9 @@ export function RadioApp() {
   const [seed, setSeed] = useState(1);
   const [air, setAir] = useState<AirStatus>("idle");
   const [netLive, setNetLive] = useState(false);
+  const [slot, setSlot] = useState(0);
+  const [sleepMinutes, setSleepMinutes] = useState(0);
+  const sleepTimer = useRef<number | undefined>(undefined);
   const reduced = useReducedMotion();
 
   const memoryRef = useRef(memory);
@@ -169,6 +181,8 @@ export function RadioApp() {
   }
 
   function turnOff() {
+    clearTimeout(sleepTimer.current);
+    setSleepMinutes(0);
     stopScan();
     peekEngine()?.sync(mixFrom(false, memoryRef.current));
     setOn(false);
@@ -177,7 +191,10 @@ export function RadioApp() {
 
   function tuneTo(id: string) {
     const station = stationById(id);
-    if (!station) return;
+    if (station) recall(station);
+  }
+
+  function recall(station: Preset) {
     stopScan();
     const next = { ...memoryRef.current, band: station.band, [station.band]: station.freq };
     setMemory(next);
@@ -268,7 +285,7 @@ export function RadioApp() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!powerRef.current) return;
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
+      if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
         return;
       if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
         event.preventDefault();
@@ -294,6 +311,7 @@ export function RadioApp() {
 
   useEffect(() => {
     return () => {
+      clearTimeout(sleepTimer.current);
       if (scanTimer.current) clearInterval(scanTimer.current);
     };
   }, []);
@@ -674,6 +692,30 @@ export function RadioApp() {
               </button>
               <span className="knob-label">Głos</span>
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 px-4 pb-4 text-sm text-cream">
+            <label>Ulubione <select className="bg-stone-900" value={slot} onChange={(event) => setSlot(Number(event.target.value))}>
+              {memory.presets.map((preset, index) => (
+                <option key={index} value={index}>{index + 1} · {preset ? BANDS[preset.band].label + " " + formatFreq(preset.band, preset.freq) : "puste"}</option>
+              ))}
+            </select></label>
+            <button type="button" disabled={!hydrated} onClick={() => setMemory((current) => ({
+              ...current, presets: current.presets.map((preset, i) =>
+                i === slot ? { band: current.band, freq: current[current.band] } : preset),
+            }))}>Zapisz stację</button>
+            <button type="button" disabled={!memory.presets[slot]} onClick={() => {
+              const preset = memory.presets[slot];
+              if (preset) recall(preset);
+            }}>Włącz stację</button>
+            <label>Wyłącznik czasowy <select className="bg-stone-900" disabled={!on} value={sleepMinutes} onChange={(event) => {
+              const minutes = Number(event.target.value);
+              clearTimeout(sleepTimer.current);
+              setSleepMinutes(minutes);
+              if (minutes) sleepTimer.current = window.setTimeout(turnOff, minutes * 60_000);
+            }}>
+              <option value={0}>Wyłączony</option>
+              {[15, 30, 60].map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
+            </select></label>
           </div>
           {deaf ? (
             <p className="px-4 pb-4 text-sm text-cream/80">
